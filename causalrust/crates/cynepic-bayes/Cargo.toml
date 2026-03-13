@@ -1,0 +1,21 @@
+[package]
+name = "cynepic-bayes"
+description = "Probabilistic programming: conjugate priors, MCMC sampling, and incremental belief updating"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cynepic-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+statrs = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

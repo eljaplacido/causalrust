@@ -1,0 +1,20 @@
+[package]
+name = "cynepic-causal"
+description = "Causal inference engine: DAG representation, identification, estimation, and refutation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cynepic-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+petgraph = { workspace = true }
+ndarray = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

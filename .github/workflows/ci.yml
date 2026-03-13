@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, "1.85"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-action/setup@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            causalrust/target
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('causalrust/Cargo.lock') }}
+
+      - name: Build workspace
+        working-directory: causalrust
+        run: cargo build --workspace
+
+      - name: Test all crates
+        working-directory: causalrust
+        run: cargo test --workspace
+
+      - name: Test guardian without rego
+        working-directory: causalrust
+        run: cargo test -p cynepic-guardian --no-default-features
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-action/setup@v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        working-directory: causalrust
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: causalrust
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Check docs build
+        working-directory: causalrust
+        run: cargo doc --workspace --no-deps
