@@ -25,4 +25,4 @@ pub mod node;
 pub use checkpoint::Checkpoint;
 pub use graph::{GraphError, StateGraph};
 pub use hooks::{EventCollector, GraphEvent, GraphHook, TracingHook};
-pub use node::{Node, NodeId};
+pub use node::{FnNode, Node, NodeId};

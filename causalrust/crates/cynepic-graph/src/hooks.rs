@@ -59,7 +59,7 @@ impl EventCollector {
 
     /// Get a snapshot of all collected events.
     pub fn events(&self) -> Vec<GraphEvent> {
-        self.events.lock().unwrap().clone()
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Count the number of `NodeCompleted` events.
@@ -76,7 +76,7 @@ impl EventCollector {
 #[async_trait::async_trait]
 impl GraphHook for EventCollector {
     async fn on_event(&self, event: GraphEvent) {
-        self.events.lock().unwrap().push(event);
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).push(event);
     }
 }
 

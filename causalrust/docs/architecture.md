@@ -53,9 +53,13 @@ Policy enforcement and safety layer. Wraps `regorus` (Rego evaluator) behind a f
 
 ```
 guardian/
-├── policy.rs         → PolicyEvaluator trait, PolicyChain, RegoPolicyEvaluator
+├── policy.rs          → PolicyEvaluator trait, PolicyChain, RegoPolicyEvaluator
 ├── circuit_breaker.rs → CircuitBreaker (Closed/Open/HalfOpen state machine)
-└── audit.rs          → AuditTrail (Arc<Mutex<Vec<AuditEntry>>>)
+├── audit.rs           → AuditTrail (Arc<Mutex<Vec<AuditEntry>>>)
+├── loop_detector.rs   → LoopDetector, LoopViolation (overvisit, alternation, total steps)
+├── rate_limiter.rs    → RateLimiter (token-bucket), RateLimitDecision
+├── risk.rs            → RiskAwareEvaluator (Bayesian risk scoring)
+└── hitl.rs            → EscalationManager, EscalationStatus, EscalationEvent
 ```
 
 **Key patterns:**
@@ -69,12 +73,15 @@ Causal inference engine built on `petgraph` for DAG operations and `ndarray` for
 
 ```
 causal/
-├── dag.rs          → CausalDag (petgraph wrapper with causal semantics)
-├── identify.rs     → BackdoorCriterion (finds adjustment sets)
+├── dag.rs              → CausalDag (petgraph wrapper with causal semantics)
+├── dsep.rs             → d_separated() (Bayes-Ball algorithm)
+├── identify.rs         → BackdoorCriterion, FrontDoorCriterion
 ├── estimate/
-│   ├── mod.rs      → Estimator trait
-│   └── linear.rs   → LinearATEEstimator (diff-in-means, OLS stub)
-└── refute.rs       → RefutationResult, placebo_treatment()
+│   ├── mod.rs          → Estimator trait
+│   ├── linear.rs       → LinearATEEstimator (diff-in-means, full OLS)
+│   ├── propensity.rs   → PropensityScoreEstimator (IPW via logistic regression)
+│   └── iv.rs           → IVEstimator (two-stage least squares)
+└── refute.rs           → RefutationResult, placebo/random/subset/bootstrap
 ```
 
 **Data flow:** DAG → identify confounders → estimate ATE → refute
@@ -87,7 +94,9 @@ Cynefin-based semantic classification and cost-aware routing.
 router/
 ├── classifier.rs   → QueryClassifier trait, KeywordClassifier
 ├── router.rs       → CynefinRouter, RoutingDecision
-└── config.rs       → RouterConfig, RouteTarget, CostTier
+├── config.rs       → RouterConfig, RouteTarget, CostTier
+├── budget.rs       → BudgetTracker, BudgetDecision, CostMap
+└── eval.rs         → ClassifierMetrics (confusion matrix, precision/recall/F1)
 ```
 
 **Routing logic:** classify(query) → domain + confidence → if confident: route to target, else: fallback domain
@@ -98,9 +107,11 @@ Bayesian inference with conjugate priors and MCMC sampling.
 
 ```
 bayes/
-├── priors.rs   → BetaBinomial, NormalNormal, GammaPoisson
-├── belief.rs   → BeliefState (unified enum over priors)
-└── sampler.rs  → MetropolisHastings (Gaussian proposal, warmup + sampling)
+├── priors.rs      → BetaBinomial, NormalNormal, GammaPoisson, DirichletMultinomial
+├── belief.rs      → BeliefState (unified enum over priors)
+├── sampler.rs     → MetropolisHastings, MultiDimMH, AdaptiveMH
+├── streaming.rs   → BeliefTracker (streaming real-time belief updates)
+└── tool_belief.rs → ToolBelief, ToolBeliefSet (tool/service reliability tracking)
 ```
 
 **Conjugate updates are O(1)**. MH sampler is general-purpose for non-conjugate posteriors.
@@ -111,8 +122,10 @@ Typed workflow orchestration inspired by LangGraph.
 
 ```
 graph/
-├── graph.rs   → StateGraph<S>, GraphError
-└── node.rs    → Node trait, FnNode, NodeId
+├── graph.rs      → StateGraph<S>, GraphError
+├── node.rs       → Node trait, FnNode, NodeId
+├── checkpoint.rs → Checkpoint<S> (serializable execution snapshot)
+└── hooks.rs      → GraphHook trait, EventCollector, TracingHook, GraphEvent
 ```
 
 **Type safety:** `StateGraph<S>` is parameterized by state type — compiler enforces that all nodes accept and return `S`. Conditional edges route based on state inspection.
@@ -132,9 +145,9 @@ graph/
 | ndarray | 0.16 | causal | Array operations for estimators |
 | statrs | 0.18 | bayes | Statistical distributions |
 | rand + rand_distr | 0.9 | bayes | RNG for MCMC |
-| axum | 0.8 | router | HTTP framework (planned) |
-| async-openai | 0.27 | graph | LLM client (planned) |
-| polars | 0.46 | causal | DataFrame ops (planned) |
+| axum | 0.8 | — | HTTP framework (planned, v0.3) |
+| async-openai | 0.27 | — | LLM client (planned, v0.3) |
+| polars | 0.46 | — | DataFrame ops (planned, v0.4) |
 
 ## Thread Safety
 

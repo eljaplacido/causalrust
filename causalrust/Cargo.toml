@@ -38,18 +38,16 @@ regorus = "0.5"
 # cynepic-causal
 petgraph = "0.7"
 ndarray = "0.16"
-polars = { version = "0.46", features = ["lazy", "csv", "json"] }
 
 # cynepic-bayes
 statrs = "0.18"
 rand = "0.9"
 rand_distr = "0.5"
 
-# cynepic-router
-axum = "0.8"
-
-# cynepic-graph
-async-openai = "0.27"
+# Planned (v0.3+) — uncomment when needed
+# axum = "0.8"
+# async-openai = "0.27"
+# polars = { version = "0.46", features = ["lazy", "csv", "json"] }
 
 # Testing
 approx = "0.5"

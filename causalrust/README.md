@@ -19,20 +19,20 @@ Most agent frameworks focus on LLM orchestration. cynepic-rs provides the **miss
 | Crate | Description | Tests |
 |-------|-------------|-------|
 | **[cynepic-core](crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry` | 8 |
-| **[cynepic-guardian](crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, audit trail | 19 |
+| **[cynepic-guardian](crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, audit trail | 22 |
 | **[cynepic-causal](crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation | 26 |
 | **[cynepic-router](crates/cynepic-router)** | Cynefin classifier, cost-aware routing, budget tracking, classifier metrics (F1/precision/recall) | 13 |
 | **[cynepic-bayes](crates/cynepic-bayes)** | Beta/Normal/Gamma/Dirichlet priors, MH/Adaptive/Multi-dim MCMC, belief tracking, tool reliability | 20 |
 | **[cynepic-graph](crates/cynepic-graph)** | Typed `StateGraph<S>`, conditional edges, cycle detection, per-node timeout, checkpointing, event hooks | 10 |
 
-**Total: 96 tests, ~6,800 LOC across 6 crates.**
+**Total: 99 tests, ~6,800 LOC across 6 crates.**
 
 ## Quick Start
 
 ```bash
 cd causalrust
 cargo build --workspace
-cargo test --workspace             # Run all 96 tests
+cargo test --workspace             # Run all 99 tests
 cargo test -p cynepic-causal       # Single crate
 cargo doc --workspace --no-deps    # Generate API docs
 ```
@@ -78,12 +78,13 @@ let mut dag = CausalDag::new();
 dag.add_variable("treatment");
 dag.add_variable("outcome");
 dag.add_variable("confounder");
-dag.add_edge("confounder", "treatment").unwrap();
-dag.add_edge("confounder", "outcome").unwrap();
-dag.add_edge("treatment", "outcome").unwrap();
+dag.add_edge("confounder", "treatment");
+dag.add_edge("confounder", "outcome");
+dag.add_edge("treatment", "outcome");
 
 // Check d-separation (treatment ⊥ outcome | confounder? No — direct edge)
-assert!(!d_separated(&dag, "treatment", "outcome", &["confounder".into()]));
+let conditioning: std::collections::HashSet<String> = ["confounder".into()].into();
+assert!(!d_separated(&dag, "treatment", "outcome", &conditioning));
 
 // Identify adjustment set via backdoor criterion
 let adjustment = BackdoorCriterion::find(&dag, "treatment", "outcome");
@@ -131,11 +132,10 @@ use cynepic_guardian::{CircuitBreaker, RateLimiter, RateLimitDecision};
 use std::time::Duration;
 
 // Circuit breaker: trips after 3 failures, resets after 5s
-let mut cb = CircuitBreaker::new(3, Duration::from_secs(5));
-assert!(cb.is_closed());
-cb.record_failure();
-cb.record_failure();
-cb.record_failure();
+let cb = CircuitBreaker::new(3, Duration::from_secs(5));
+cb.record_failure().await;
+cb.record_failure().await;
+cb.record_failure().await;
 assert!(cb.is_open()); // tripped — block calls
 
 // Rate limiter: 5 requests/sec burst, 2 tokens/sec refill

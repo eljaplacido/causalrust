@@ -47,7 +47,7 @@ Domain properties, serialization round-trips, policy decisions, audit trails.
 | Persistent audit (sqlx/sled) | Medium | P2 |
 | OTel span export from audit trail | Medium | P3 |
 
-### Tests: 19
+### Tests: 22
 
 ---
 

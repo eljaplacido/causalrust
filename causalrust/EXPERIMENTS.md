@@ -28,6 +28,8 @@ cynepic-graph = { path = "../causalrust/crates/cynepic-graph" }
 tokio = { version = "1", features = ["full"] }
 ndarray = "0.16"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+async-trait = "0.1"
 ```
 
 ---
@@ -41,6 +43,7 @@ serde_json = "1"
 ```rust
 use cynepic_causal::{CausalDag, BackdoorCriterion, FrontDoorCriterion, d_separated, LinearATEEstimator};
 use ndarray::array;
+use std::collections::HashSet;
 
 #[test]
 fn experiment_causal_dag() {
@@ -55,18 +58,19 @@ fn experiment_causal_dag() {
     dag.add_variable("seasonality");     // confounder
 
     // Causal edges
-    dag.add_edge("redesign", "signups").unwrap();
-    dag.add_edge("marketing_spend", "signups").unwrap();
-    dag.add_edge("marketing_spend", "redesign").unwrap(); // marketing budget influenced deployment timing
-    dag.add_edge("seasonality", "signups").unwrap();
-    dag.add_edge("seasonality", "marketing_spend").unwrap();
+    dag.add_edge("redesign", "signups");
+    dag.add_edge("marketing_spend", "signups");
+    dag.add_edge("marketing_spend", "redesign"); // marketing budget influenced deployment timing
+    dag.add_edge("seasonality", "signups");
+    dag.add_edge("seasonality", "marketing_spend");
 
     // Q1: Is the graph acyclic? (Must be for causal inference)
     assert!(dag.is_acyclic());
 
     // Q2: Are redesign and signups d-separated given {marketing_spend}?
     //     No — there's still the seasonality → signups path not blocked
-    let dsep = d_separated(&dag, "redesign", "signups", &["marketing_spend".into()]);
+    let conditioning: HashSet<String> = ["marketing_spend".into()].into();
+    let dsep = d_separated(&dag, "redesign", "signups", &conditioning);
     println!("d-separated given {{marketing_spend}}? {}", dsep);
 
     // Q3: What variables must we condition on to identify the causal effect?
@@ -102,8 +106,7 @@ fn experiment_causal_dag() {
 **When to use this:** When you can't randomize (observational studies), when you have instruments, or when simple difference-in-means is biased.
 
 ```rust
-use cynepic_causal::estimate::propensity::PropensityScoreEstimator;
-use cynepic_causal::estimate::iv::IVEstimator;
+use cynepic_causal::{PropensityScoreEstimator, IVEstimator};
 use ndarray::{array, Array2};
 
 #[test]
@@ -124,7 +127,7 @@ fn experiment_propensity_scores() {
     let treatment = array![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0];
     let outcome   = array![5.0, 4.0, 15.0, 16.0, 6.0, 5.0, 14.0, 17.0];
 
-    let result = PropensityScoreEstimator::estimate_ipw(&treatment, &outcome, &covariates);
+    let result = PropensityScoreEstimator::ipw(&treatment, &outcome, &covariates);
     println!("IPW ATE: {:.2} (SE: {:.2})", result.ate, result.std_error);
     // IPW adjusts for the fact that older/richer people were more likely to be treated
 }
@@ -134,11 +137,13 @@ fn experiment_instrumental_variables() {
     // IV/2SLS: When you have an instrument that affects treatment but not outcome directly
     // Instrument: distance to clinic (affects whether you get treatment, but doesn't
     //             directly affect health outcome)
-    let instrument = array![1.0, 2.0, 0.5, 3.0, 1.5, 0.8, 2.5, 0.3];
-    let treatment  = array![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0]; // closer → more likely treated
-    let outcome    = array![5.0, 4.0, 9.0, 3.0, 5.0, 8.0, 4.0, 10.0];
+    let instruments = Array2::from_shape_vec((8, 1), vec![
+        1.0, 2.0, 0.5, 3.0, 1.5, 0.8, 2.5, 0.3,
+    ]).unwrap();
+    let treatment = array![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0];
+    let outcome   = array![5.0, 4.0, 9.0, 3.0, 5.0, 8.0, 4.0, 10.0];
 
-    let result = IVEstimator::estimate_2sls(&instrument, &treatment, &outcome);
+    let result = IVEstimator::two_stage_ls(&treatment, &outcome, &instruments);
     println!("IV (2SLS) ATE: {:.2} (SE: {:.2})", result.ate, result.std_error);
     // 2SLS uses the instrument to isolate exogenous variation in treatment
 }
@@ -153,8 +158,8 @@ fn experiment_instrumental_variables() {
 **When to use this:** After every ATE estimation — refutation is what separates real causal claims from spurious findings.
 
 ```rust
-use cynepic_causal::refute::RefutationResult;
-use cynepic_causal::{LinearATEEstimator, CausalDag, BackdoorCriterion};
+use cynepic_causal::refute::{placebo_treatment, random_common_cause, subset_validation, bootstrap_refutation};
+use cynepic_causal::LinearATEEstimator;
 use ndarray::array;
 
 #[test]
@@ -168,24 +173,23 @@ fn experiment_refutation() {
 
     // Placebo test: randomly reassign treatment labels
     // If the effect survives, it's probably spurious
-    let placebo = cynepic_causal::RefutationResult::placebo_treatment(&treatment, &outcome, 100);
-    println!("Placebo refutation: {:?}", placebo.passed);
-    println!("Placebo effect: {:.4} (should be near 0)", placebo.effect_size);
-    // A good estimate: original ATE >> placebo effect
+    let placebo = placebo_treatment(&outcome, original.ate, 1.0);
+    println!("Placebo refutation passed: {}", placebo.passed);
+    println!("Placebo effect: {:.4} (should be near 0)", placebo.refuted_effect);
 
     // Random common cause: add random confounders and re-estimate
-    let random_cause = cynepic_causal::RefutationResult::random_common_cause(&treatment, &outcome, 50);
-    println!("Random cause refutation: {:?}", random_cause.passed);
-    println!("Effect change: {:.4}", (random_cause.effect_size - original.ate).abs());
+    let random_cause = random_common_cause(&treatment, &outcome, original.ate, 50);
+    println!("Random cause refutation passed: {}", random_cause.passed);
+    println!("Effect change: {:.4}", (random_cause.refuted_effect - original.ate).abs());
 
     // Subset validation: estimate on random subsets
-    let subset = cynepic_causal::RefutationResult::subset_validation(&treatment, &outcome, 50, 0.7);
-    println!("Subset validation: {:?}", subset.passed);
+    let subset = subset_validation(&treatment, &outcome, original.ate, 0.7, 50);
+    println!("Subset validation passed: {}", subset.passed);
 
     // Bootstrap: resample and check stability
-    let bootstrap = cynepic_causal::RefutationResult::bootstrap_refutation(&treatment, &outcome, 200);
-    println!("Bootstrap refutation: {:?}", bootstrap.passed);
-    println!("Bootstrap mean effect: {:.2}", bootstrap.effect_size);
+    let bootstrap = bootstrap_refutation(&treatment, &outcome, original.ate, 200);
+    println!("Bootstrap refutation passed: {}", bootstrap.passed);
+    println!("Bootstrap mean effect: {:.2}", bootstrap.refuted_effect);
 }
 ```
 
@@ -238,21 +242,19 @@ fn experiment_anomaly_detection() {
     // === Server request rate anomaly detection ===
     // Prior: typical server handles ~100 requests/hour
 
-    let mut rate_belief = GammaPoisson::new(100.0, 1.0); // α=100, β=1 → mean=100
+    let mut rate_belief = GammaPoisson::new(100.0, 1.0); // alpha=100, beta=1 -> mean=100
     println!("Prior mean rate: {:.1} req/hr", rate_belief.mean());
 
     // Normal hours: observe 95, 102, 98 requests
-    for count in [95, 102, 98] {
-        rate_belief.update(count);
-    }
+    rate_belief.update(&[95, 102, 98]);
     println!("After normal hours: mean={:.1}, var={:.1}", rate_belief.mean(), rate_belief.variance());
 
     // Suddenly: 15 requests in an hour — anomaly?
     let mut anomaly_test = rate_belief.clone();
-    anomaly_test.update(15);
+    anomaly_test.update(&[15]);
     println!("\nAfter anomalous hour (15 req):");
     println!("  Updated mean: {:.1}", anomaly_test.mean());
-    println!("  This is far below the expected ~100 → likely anomaly");
+    println!("  This is far below the expected ~100 -> likely anomaly");
 }
 
 #[test]
@@ -288,15 +290,15 @@ fn experiment_categorical_beliefs() {
 **When to use this:** When conjugate priors aren't flexible enough — custom likelihood functions, multi-parameter models.
 
 ```rust
-use cynepic_bayes::sampler::{MetropolisHastings, AdaptiveMH, MultiDimMH, SamplerResult};
+use cynepic_bayes::sampler::{MetropolisHastings, AdaptiveMH, MultiDimMH};
 
 #[test]
 fn experiment_mcmc_standard_normal() {
     // Sample from a standard normal using MH
-    let target_log_density = |x: f64| -0.5 * x * x; // log N(0,1)
+    let log_density = |x: f64| -0.5 * x * x; // log N(0,1)
 
-    let mut mh = MetropolisHastings::new(target_log_density, 0.5); // proposal_std = 0.5
-    let result = mh.sample(0.0, 1000, 5000); // start=0, warmup=1000, samples=5000
+    let sampler = MetropolisHastings::new(0.5, 1000, 5000); // proposal_std, warmup, n_samples
+    let result = sampler.sample(log_density, 0.0); // log_density, initial
 
     let mean: f64 = result.samples.iter().sum::<f64>() / result.samples.len() as f64;
     let variance: f64 = result.samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
@@ -311,19 +313,19 @@ fn experiment_mcmc_standard_normal() {
 
 #[test]
 fn experiment_adaptive_mcmc() {
-    // Adaptive MH auto-tunes proposal to target 23.4% acceptance (optimal for multi-dim)
-    let target = |x: f64| {
+    // Adaptive MH auto-tunes proposal to target acceptance rate
+    let log_density = |x: f64| {
         // Bimodal: mixture of N(-3, 0.5) and N(3, 0.5)
         let p1 = (-0.5 * ((x + 3.0) / 0.5_f64.sqrt()).powi(2)).exp();
         let p2 = (-0.5 * ((x - 3.0) / 0.5_f64.sqrt()).powi(2)).exp();
         (0.5 * p1 + 0.5 * p2).ln()
     };
 
-    let mut amh = AdaptiveMH::new(target, 1.0, 0.234); // initial_std=1, target_accept=0.234
-    let result = amh.sample(0.0, 2000, 10000);
+    let sampler = AdaptiveMH::new(0.44, 2000, 10000); // target_acceptance, warmup, n_samples
+    let result = sampler.sample(log_density, 0.0); // log_density, initial
 
     println!("Bimodal target: 0.5*N(-3,0.5) + 0.5*N(3,0.5)");
-    println!("Acceptance rate: {:.1}% (target: 23.4%)", result.acceptance_rate * 100.0);
+    println!("Acceptance rate: {:.1}% (target: 44%)", result.acceptance_rate * 100.0);
     println!("Sample size: {}", result.samples.len());
 
     // Check we found both modes
@@ -335,12 +337,12 @@ fn experiment_adaptive_mcmc() {
 #[test]
 fn experiment_multidim_mcmc() {
     // 2D target: bivariate normal N([0,0], I)
-    let target = |x: &[f64]| -> f64 {
+    let log_density = |x: &[f64]| -> f64 {
         -0.5 * (x[0] * x[0] + x[1] * x[1])
     };
 
-    let mut mh = MultiDimMH::new(target, vec![0.5, 0.5]); // proposal std per dimension
-    let result = mh.sample(vec![0.0, 0.0], 1000, 5000);
+    let sampler = MultiDimMH::new(vec![0.5, 0.5], 1000, 5000); // proposal_stds, warmup, n_samples
+    let result = sampler.sample(log_density, vec![0.0, 0.0]); // log_density, initial
 
     let n = result.samples.len() as f64;
     let mean_x: f64 = result.samples.iter().map(|s| s[0]).sum::<f64>() / n;
@@ -362,7 +364,7 @@ fn experiment_multidim_mcmc() {
 
 ```rust
 use cynepic_guardian::*;
-use cynepic_core::PolicyDecision;
+use cynepic_core::{PolicyDecision, AuditEntry, EscalationTarget};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -375,42 +377,48 @@ async fn experiment_policy_chain() {
     struct AdminOnly;
     #[async_trait::async_trait]
     impl PolicyEvaluator for AdminOnly {
-        async fn evaluate(&self, _action: &str, context: &serde_json::Value) -> PolicyDecision {
+        async fn evaluate(&self, _action: &str, context: &serde_json::Value)
+            -> Result<PolicyDecision, cynepic_guardian::policy::GuardianError>
+        {
             if context.get("role").and_then(|r| r.as_str()) == Some("admin") {
-                PolicyDecision::Approve
+                Ok(PolicyDecision::Approve)
             } else {
-                PolicyDecision::Reject { reason: "Admin role required".into() }
+                Ok(PolicyDecision::Reject { reason: "Admin role required".into() })
             }
         }
+        fn name(&self) -> &str { "admin_only" }
     }
 
     // Policy 2: block during maintenance windows
     struct MaintenanceCheck;
     #[async_trait::async_trait]
     impl PolicyEvaluator for MaintenanceCheck {
-        async fn evaluate(&self, _action: &str, context: &serde_json::Value) -> PolicyDecision {
+        async fn evaluate(&self, _action: &str, context: &serde_json::Value)
+            -> Result<PolicyDecision, cynepic_guardian::policy::GuardianError>
+        {
             if context.get("maintenance").and_then(|m| m.as_bool()) == Some(true) {
-                PolicyDecision::Reject { reason: "System in maintenance".into() }
+                Ok(PolicyDecision::Reject { reason: "System in maintenance".into() })
             } else {
-                PolicyDecision::Approve
+                Ok(PolicyDecision::Approve)
             }
         }
+        fn name(&self) -> &str { "maintenance_check" }
     }
 
     let chain = PolicyChain::new()
         .add(Arc::new(AdminOnly))
         .add(Arc::new(MaintenanceCheck));
 
-    // Test: admin during normal operation → approve
-    let result = chain.evaluate("deploy", &json!({"role": "admin", "maintenance": false})).await;
+    // Test: admin during normal operation -> approve
+    let result = chain.evaluate("deploy", &json!({"role": "admin", "maintenance": false})).await.unwrap();
     assert!(matches!(result, PolicyDecision::Approve));
 
-    // Test: admin during maintenance → reject (short-circuits at policy 2)
-    let result = chain.evaluate("deploy", &json!({"role": "admin", "maintenance": true})).await;
+    // Test: admin during maintenance -> reject (short-circuits at policy 2)
+    let result = chain.evaluate("deploy", &json!({"role": "admin", "maintenance": true})).await.unwrap();
     assert!(matches!(result, PolicyDecision::Reject { .. }));
 
-    // Test: non-admin → reject (short-circuits at policy 1)
-    let result = chain.evaluate("deploy", &json!({"role": "viewer", "maintenance": false})).await;
+    // Test: non-admin -> reject (short-circuits at policy 1)
+    let result = chain.evaluate("deploy", &json!({"role": "viewer", "maintenance": false})).await.unwrap();
     assert!(matches!(result, PolicyDecision::Reject { .. }));
 }
 
@@ -419,7 +427,7 @@ fn experiment_loop_detection() {
     // === Detect runaway loops in agent execution ===
     let mut detector = LoopDetector::new(
         5,    // max visits per node before flagging
-        3,    // alternation threshold (A→B→A→B... detected after 3 cycles)
+        3,    // alternation threshold (A->B->A->B... detected after 3 cycles)
     );
 
     // Normal execution
@@ -427,13 +435,13 @@ fn experiment_loop_detection() {
     assert!(detector.record_visit("process").is_none());
     assert!(detector.record_visit("validate").is_none());
 
-    // Repeated visits to same node → overvisit detection
+    // Repeated visits to same node -> overvisit detection
     for _ in 0..4 {
         let _ = detector.record_visit("retry_api");
     }
     let violation = detector.record_visit("retry_api");
     println!("Loop violation: {:?}", violation);
-    assert!(matches!(violation, Some(LoopViolation::NodeOvervisit { .. })));
+    assert!(matches!(violation, Some(LoopViolation::NodeOvervisited { .. })));
 }
 
 #[test]
@@ -442,12 +450,14 @@ fn experiment_hitl_escalation() {
     let mut mgr = EscalationManager::new(Duration::from_secs(300)); // 5 min timeout
 
     // Create an escalation request
-    let event = mgr.escalate(
-        "high_risk_deployment",
-        "senior_oncall",
-        serde_json::json!({"service": "payments", "risk_score": 0.87}),
+    let event = mgr.create_escalation(
+        "high_risk_deployment".into(),
+        "Risk score exceeds threshold".into(),
+        EscalationTarget::Role { name: "senior_oncall".into() },
+        json!({"service": "payments", "risk_score": 0.87}),
     );
-    println!("Escalation created: {}", event.id);
+    let event_id = event.id;
+    println!("Escalation created: {}", event_id);
     assert!(matches!(event.status, EscalationStatus::Pending));
 
     // Check pending escalations
@@ -455,12 +465,8 @@ fn experiment_hitl_escalation() {
     assert_eq!(pending.len(), 1);
 
     // Human approves
-    let approved = mgr.approve(&event.id);
-    assert!(approved);
-
-    // Verify status
-    let resolved = mgr.get(&event.id).unwrap();
-    assert!(matches!(resolved.status, EscalationStatus::Approved));
+    let approved = mgr.approve(&event_id, "jane@example.com".into()).unwrap();
+    assert!(matches!(approved.status, EscalationStatus::Approved { .. }));
 }
 
 #[test]
@@ -468,13 +474,12 @@ fn experiment_audit_trail() {
     // === Append-only audit trail ===
     let trail = AuditTrail::new();
 
-    trail.record("deploy_v2.1", "deployment_agent", PolicyDecision::Approve, None);
-    trail.record(
+    trail.record(AuditEntry::new("deploy_v2.1", "deployment_agent", PolicyDecision::Approve));
+    trail.record(AuditEntry::new(
         "modify_database",
         "migration_agent",
         PolicyDecision::Reject { reason: "Schema change during freeze".into() },
-        Some(serde_json::json!({"table": "users", "operation": "alter"})),
-    );
+    ));
 
     // Export as JSON
     let json = trail.to_json().unwrap();
@@ -498,108 +503,113 @@ fn experiment_audit_trail() {
 
 ```rust
 use cynepic_router::*;
+use cynepic_router::config::{RouterConfig, RouteTarget, CostTier};
+use cynepic_router::classifier::KeywordClassifier;
 use cynepic_core::CynefinDomain;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn experiment_routing() {
     // Build route configuration
     let mut routes = HashMap::new();
-    routes.insert(CynefinDomain::Clear, router::RouteTarget {
+    routes.insert(CynefinDomain::Clear, RouteTarget {
         url: "http://cache/lookup".into(),
         timeout_ms: 100,
-        cost_tier: budget::CostTier::Free,
+        cost_tier: CostTier::Free,
     });
-    routes.insert(CynefinDomain::Complicated, router::RouteTarget {
+    routes.insert(CynefinDomain::Complicated, RouteTarget {
         url: "http://causal-engine/analyze".into(),
         timeout_ms: 5000,
-        cost_tier: budget::CostTier::Medium,
+        cost_tier: CostTier::Medium,
     });
-    routes.insert(CynefinDomain::Complex, router::RouteTarget {
+    routes.insert(CynefinDomain::Complex, RouteTarget {
         url: "http://bayes-engine/update".into(),
         timeout_ms: 3000,
-        cost_tier: budget::CostTier::Low,
+        cost_tier: CostTier::Low,
     });
-    routes.insert(CynefinDomain::Chaotic, router::RouteTarget {
+    routes.insert(CynefinDomain::Chaotic, RouteTarget {
         url: "http://emergency/respond".into(),
         timeout_ms: 500,
-        cost_tier: budget::CostTier::High,
+        cost_tier: CostTier::High,
     });
 
-    let config = router::RouterConfig {
+    let config = RouterConfig {
         routes,
         confidence_threshold: 0.5,
         fallback_domain: CynefinDomain::Disorder,
     };
 
-    let classifier = classifier::KeywordClassifier::new();
-    let router = CynefinRouter::new(Box::new(classifier), config);
+    let classifier = KeywordClassifier::default_patterns();
+    let router = CynefinRouter::new(Arc::new(classifier), config);
 
     // Route different queries
     let queries = vec![
-        "What caused the revenue drop last quarter?",           // → Complicated (causal)
-        "System is down, customers can't pay!",                 // → Chaotic (emergency)
-        "What is the probability of churn for this segment?",   // → Complex (probabilistic)
-        "Look up user ID 12345",                                // → Clear (deterministic)
+        "What caused the revenue drop last quarter?",           // -> Complicated (causal)
+        "System is down, customers can't pay!",                 // -> Chaotic (emergency)
+        "What is the probability of churn for this segment?",   // -> Complex (probabilistic)
+        "Look up user ID 12345",                                // -> Clear (deterministic)
     ];
 
     for query in queries {
-        let decision = router.route(query).await;
-        println!("'{}'\n  → {:?} (confidence: {:.2})\n  → {}\n",
+        let decision = router.route(query).await.unwrap();
+        println!("'{}'\n  -> {:?} (confidence: {:.2})\n  -> {:?}\n",
             &query[..50.min(query.len())],
-            decision.domain,
-            decision.confidence,
-            decision.target.url,
+            decision.classification.domain,
+            decision.classification.confidence,
+            decision.target.map(|t| t.url),
         );
     }
 }
 
 #[test]
 fn experiment_budget_tracking() {
-    use cynepic_router::budget::*;
+    let cost_map = CostMap {
+        free: 0.0,
+        low: 0.01,
+        medium: 0.10,
+        high: 1.00,
+    };
 
     let mut tracker = BudgetTracker::new(100.0); // $100 budget
 
     // Record costs
-    tracker.record(CostTier::Free);     // $0
-    tracker.record(CostTier::Low);      // $0.01
-    tracker.record(CostTier::Medium);   // $0.10
-    tracker.record(CostTier::High);     // $1.00
+    tracker.record(&CostTier::Free, &cost_map);
+    tracker.record(&CostTier::Low, &cost_map);
+    tracker.record(&CostTier::Medium, &cost_map);
+    tracker.record(&CostTier::High, &cost_map);
 
-    println!("Spent: ${:.2}", tracker.total_spent());
+    println!("Spent: ${:.2}", tracker.total_spent);
     println!("Remaining: ${:.2}", tracker.remaining());
 
     // Check budget decisions
-    match tracker.check(CostTier::High) {
-        BudgetDecision::Approved { remaining } => println!("Approved, ${:.2} left", remaining),
-        BudgetDecision::Denied { over_by } => println!("Denied, over by ${:.2}", over_by),
-        BudgetDecision::Downgrade { from, to } => println!("Downgrade {:?} → {:?}", from, to),
+    match tracker.check(&CostTier::High, &cost_map) {
+        BudgetDecision::WithinBudget { remaining } => println!("Approved, ${:.2} left", remaining),
+        BudgetDecision::OverBudget { overage, suggested_tier } =>
+            println!("Over by ${:.2}, suggest {:?}", overage, suggested_tier),
     }
 }
 
 #[test]
 fn experiment_classifier_metrics() {
-    use cynepic_router::eval::ClassifierMetrics;
+    let mut metrics = ClassifierMetrics::new();
 
-    let mut metrics = ClassifierMetrics::new(5); // 5 classes (Cynefin domains + Disorder)
-
-    // Record predictions vs ground truth
-    // (predicted_class, actual_class)
-    metrics.record(0, 0); // Clear predicted, Clear actual ✓
-    metrics.record(0, 0); // ✓
-    metrics.record(1, 1); // Complicated predicted, Complicated actual ✓
-    metrics.record(1, 0); // Complicated predicted, was actually Clear ✗
-    metrics.record(2, 2); // Complex ✓
-    metrics.record(3, 3); // Chaotic ✓
-    metrics.record(0, 1); // Clear predicted, was actually Complicated ✗
+    // Record predictions vs ground truth (predicted, actual)
+    metrics.record(CynefinDomain::Clear, CynefinDomain::Clear);       // correct
+    metrics.record(CynefinDomain::Clear, CynefinDomain::Clear);       // correct
+    metrics.record(CynefinDomain::Complicated, CynefinDomain::Complicated); // correct
+    metrics.record(CynefinDomain::Complicated, CynefinDomain::Clear); // misclassified
+    metrics.record(CynefinDomain::Complex, CynefinDomain::Complex);   // correct
+    metrics.record(CynefinDomain::Chaotic, CynefinDomain::Chaotic);   // correct
+    metrics.record(CynefinDomain::Clear, CynefinDomain::Complicated); // misclassified
 
     println!("Accuracy: {:.1}%", metrics.accuracy() * 100.0);
-    for class in 0..4 {
-        println!("Class {} — precision: {:.2}, recall: {:.2}, F1: {:.2}",
-            class,
-            metrics.precision(class),
-            metrics.recall(class),
-            metrics.f1(class),
+    for domain in CynefinDomain::all() {
+        println!("{:?} — precision: {:.2}, recall: {:.2}, F1: {:.2}",
+            domain,
+            metrics.precision(domain),
+            metrics.recall(domain),
+            metrics.f1(domain),
         );
     }
 }
@@ -689,7 +699,7 @@ async fn experiment_pipeline_graph() {
             GraphEvent::NodeCompleted { node, step, duration_ms } =>
                 println!("  [{step}] Completed: {node} ({duration_ms}ms)"),
             GraphEvent::RouteDecision { from, to, .. } =>
-                println!("  Route: {from} → {to}"),
+                println!("  Route: {from} -> {to}"),
             GraphEvent::ExecutionCompleted { total_steps, total_ms } =>
                 println!("  Done: {total_steps} steps in {total_ms}ms"),
             _ => {}
@@ -760,8 +770,8 @@ async fn experiment_timeout_safety() {
         .await;
 
     match result {
-        Err(cynepic_graph::GraphError::NodeTimedOut { node, timeout_ms }) => {
-            println!("Node '{}' timed out after {}ms (as expected)", node, timeout_ms);
+        Err(cynepic_graph::GraphError::NodeTimedOut { node_id, timeout_ms }) => {
+            println!("Node '{}' timed out after {}ms (as expected)", node_id, timeout_ms);
         }
         other => panic!("Expected timeout, got: {:?}", other),
     }
@@ -770,53 +780,42 @@ async fn experiment_timeout_safety() {
 
 ---
 
-## Experiment 9: Streaming Belief Tracking — Real-Time Updates
+## Experiment 9: Tool Reliability Tracking
 
-**What you learn:** How BeliefTracker maintains and updates beliefs in real-time with typed observations.
+**What you learn:** How to track success/failure of external tools and services using Bayesian belief updates.
 
 **When to use this:** Online learning, real-time monitoring, streaming anomaly detection, agent confidence tracking.
 
 ```rust
-use cynepic_bayes::streaming::BeliefTracker;
-use cynepic_bayes::priors::BetaBinomial;
+use cynepic_bayes::tool_belief::{ToolBelief, ToolBeliefSet};
 
 #[test]
-fn experiment_streaming_beliefs() {
-    let mut tracker = BeliefTracker::new();
-
-    // Track beliefs about multiple tools/services
-    tracker.add("api_health", BetaBinomial::new(1.0, 1.0));
-    tracker.add("model_accuracy", BetaBinomial::new(1.0, 1.0));
+fn experiment_tool_reliability() {
+    // Track reliability of external tools/APIs
+    let mut tools = ToolBeliefSet::new();
+    tools.add_tool("llm_api", None);     // default Beta(1,1) prior
+    tools.add_tool("search_api", None);
 
     // Stream of observations
-    let observations = vec![
-        ("api_health", true),   // success
-        ("api_health", true),
-        ("model_accuracy", true),
-        ("api_health", false),  // failure!
-        ("model_accuracy", true),
-        ("api_health", true),
-        ("model_accuracy", false),
-        ("api_health", false),  // another failure
-    ];
+    tools.record_success("llm_api");
+    tools.record_success("llm_api");
+    tools.record_failure("llm_api");    // 2 successes, 1 failure
 
-    for (name, success) in observations {
-        if success {
-            tracker.update(name, 1, 0);
-        } else {
-            tracker.update(name, 0, 1);
-        }
-        let belief = tracker.get(name).unwrap();
-        println!("{}: reliability={:.3}, 95% CI={:?}",
-            name, belief.mean(), belief.credible_interval_95());
-    }
+    tools.record_success("search_api");
+    tools.record_success("search_api");
+    tools.record_success("search_api"); // 3 successes, 0 failures
 
-    // Final beliefs
-    let api = tracker.get("api_health").unwrap();
-    let model = tracker.get("model_accuracy").unwrap();
-    println!("\nFinal beliefs:");
-    println!("  API health:     {:.1}% reliable", api.mean() * 100.0);
-    println!("  Model accuracy: {:.1}% reliable", model.mean() * 100.0);
+    // Query reliability beliefs
+    let llm = tools.get("llm_api").unwrap();
+    println!("LLM reliability: {:.3}", llm.reliability());
+    println!("Should circuit-break? {}", llm.should_circuit_break(0.3));
+
+    let search = tools.get("search_api").unwrap();
+    println!("Search reliability: {:.3}", search.reliability());
+
+    // Check confidence intervals
+    println!("LLM CI:    {:?}", llm.confidence_interval());
+    println!("Search CI: {:?}", search.confidence_interval());
 }
 ```
 
@@ -829,27 +828,35 @@ fn experiment_streaming_beliefs() {
 **When to use this:** Any automated decision where the action's risk depends on current belief state.
 
 ```rust
-use cynepic_guardian::risk::RiskAwareEvaluator;
-use cynepic_core::PolicyDecision;
+use cynepic_guardian::RiskAwareEvaluator;
+use cynepic_guardian::policy::PolicyEvaluator;
+use cynepic_core::{PolicyDecision, EscalationTarget};
+use serde_json::json;
 
 #[tokio::test]
 async fn experiment_risk_aware_policy() {
-    // Risk thresholds: approve if risk < 0.3, escalate if < 0.7, reject if >= 0.7
-    let evaluator = RiskAwareEvaluator::new(0.3, 0.7);
+    // Risk thresholds: escalate if risk >= 0.3, reject if >= 0.7
+    // The evaluator reads the risk score from a field in the JSON context
+    let evaluator = RiskAwareEvaluator::new(
+        "risk_score",                                       // field name in context JSON
+        0.3,                                                 // escalate threshold
+        0.7,                                                 // reject threshold
+        EscalationTarget::Role { name: "oncall".into() },   // escalation target
+    );
 
     // Low risk action
-    let decision = evaluator.evaluate_risk(0.15);
-    println!("Risk 0.15 → {:?}", decision);
+    let decision = evaluator.evaluate("deploy", &json!({"risk_score": 0.15})).await.unwrap();
+    println!("Risk 0.15 -> {:?}", decision);
     assert!(matches!(decision, PolicyDecision::Approve));
 
-    // Medium risk → needs human approval
-    let decision = evaluator.evaluate_risk(0.5);
-    println!("Risk 0.50 → {:?}", decision);
+    // Medium risk -> needs human approval
+    let decision = evaluator.evaluate("deploy", &json!({"risk_score": 0.5})).await.unwrap();
+    println!("Risk 0.50 -> {:?}", decision);
     assert!(matches!(decision, PolicyDecision::Escalate { .. }));
 
-    // High risk → blocked
-    let decision = evaluator.evaluate_risk(0.85);
-    println!("Risk 0.85 → {:?}", decision);
+    // High risk -> blocked
+    let decision = evaluator.evaluate("deploy", &json!({"risk_score": 0.85})).await.unwrap();
+    println!("Risk 0.85 -> {:?}", decision);
     assert!(matches!(decision, PolicyDecision::Reject { .. }));
 }
 ```
@@ -860,9 +867,9 @@ async fn experiment_risk_aware_policy() {
 
 After running these experiments, try combining crates into end-to-end workflows:
 
-1. **Causal A/B Test Pipeline**: Build a DAG → identify confounders → estimate ATE → refute → policy gate on CI
-2. **Tool Reliability Monitor**: Track tool success/failure with `ToolBeliefSet` → circuit break when reliability drops → escalate to human
-3. **Governed Agent Loop**: `StateGraph` orchestrating classify → analyze → validate → act, with `PolicyChain` checking every transition
-4. **Anomaly Response Workflow**: `GammaPoisson` streaming anomaly detection → `CynefinRouter` severity classification → `EscalationManager` HITL
+1. **Causal A/B Test Pipeline**: Build a DAG -> identify confounders -> estimate ATE -> refute -> policy gate on CI
+2. **Tool Reliability Monitor**: Track tool success/failure with `ToolBeliefSet` -> circuit break when reliability drops -> escalate to human
+3. **Governed Agent Loop**: `StateGraph` orchestrating classify -> analyze -> validate -> act, with `PolicyChain` checking every transition
+4. **Anomaly Response Workflow**: `GammaPoisson` streaming anomaly detection -> `CynefinRouter` severity classification -> `EscalationManager` HITL
 
 Each crate is designed to compose with the others. The `cynepic-core` types (`PolicyDecision`, `CynefinDomain`, `AuditEntry`) are the shared vocabulary that ties everything together.

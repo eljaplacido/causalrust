@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// A Directed Acyclic Graph representing a Structural Causal Model.
 ///
 /// Nodes are named variables; edges represent direct causal relationships.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CausalDag {
     /// The underlying directed graph.
     #[serde(skip)]
@@ -18,6 +18,28 @@ pub struct CausalDag {
     variables: Vec<String>,
     /// Edges as (source, target) pairs of variable names.
     edges: Vec<(String, String)>,
+}
+
+impl<'de> Deserialize<'de> for CausalDag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CausalDagData {
+            variables: Vec<String>,
+            edges: Vec<(String, String)>,
+        }
+        let data = CausalDagData::deserialize(deserializer)?;
+        let mut dag = CausalDag::new();
+        for var in &data.variables {
+            dag.add_variable(var);
+        }
+        for (cause, effect) in &data.edges {
+            dag.add_edge(cause, effect);
+        }
+        Ok(dag)
+    }
 }
 
 impl CausalDag {

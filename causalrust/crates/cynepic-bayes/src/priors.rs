@@ -86,7 +86,12 @@ impl NormalNormal {
     }
 
     /// Update the posterior with a batch of observations.
+    ///
+    /// Empty slices are a no-op.
     pub fn update(&mut self, observations: &[f64]) {
+        if observations.is_empty() {
+            return;
+        }
         let n = observations.len() as f64;
         let obs_mean: f64 = observations.iter().sum::<f64>() / n;
         let new_precision = self.precision + n * self.obs_precision;
@@ -186,13 +191,21 @@ impl DirichletMultinomial {
     }
 
     /// Marginal mean for a single category.
+    ///
+    /// # Panics
+    /// Panics if `i >= self.k()`.
     pub fn marginal_mean(&self, i: usize) -> f64 {
+        assert!(i < self.alphas.len(), "category index {i} out of bounds (k={})", self.alphas.len());
         let total: f64 = self.alphas.iter().sum();
         self.alphas[i] / total
     }
 
     /// Marginal variance for a single category.
+    ///
+    /// # Panics
+    /// Panics if `i >= self.k()`.
     pub fn marginal_variance(&self, i: usize) -> f64 {
+        assert!(i < self.alphas.len(), "category index {i} out of bounds (k={})", self.alphas.len());
         let total: f64 = self.alphas.iter().sum();
         let ai = self.alphas[i];
         (ai * (total - ai)) / (total * total * (total + 1.0))

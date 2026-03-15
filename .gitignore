@@ -13,3 +13,14 @@ desktop.ini
 .idea/
 .vscode/
 *.iml
+
+# Secrets / credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.*
+config.local.*
+
+# Claude Code local config
+.claude/

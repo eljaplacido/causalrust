@@ -227,10 +227,10 @@ Agent → MCP → estimate_treatment_effect(treatment: [...], outcome: [...])
 
 ### Apache Arrow / Parquet
 
-cynepic-causal uses Polars internally, which is Arrow-native. Data flows:
+cynepic-causal currently uses ndarray for numeric operations. A future Polars backend is planned (v0.4+) to enable Arrow-native data flows:
 
 ```
-Parquet file → Polars LazyFrame → cynepic-causal (Rust)
+Parquet file → Polars LazyFrame → cynepic-causal (Rust)   [planned]
              → ATE estimation → JSON result
              → or Arrow IPC → Python/Spark consumer
 ```

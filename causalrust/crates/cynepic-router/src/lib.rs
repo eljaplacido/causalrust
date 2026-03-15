@@ -20,6 +20,7 @@ pub mod eval;
 pub mod router;
 
 pub use budget::{BudgetDecision, BudgetTracker, CostMap};
-pub use classifier::{ClassificationResult, QueryClassifier};
+pub use classifier::{ClassificationResult, ClassifierError, KeywordClassifier, QueryClassifier};
+pub use config::{CostTier, RouteTarget, RouterConfig};
 pub use eval::ClassifierMetrics;
 pub use router::{CynefinRouter, RoutingDecision};

@@ -2,7 +2,7 @@
 
 ## Current State (v0.2.0-dev)
 
-~6,800 LOC across 6 crates, 96 tests, all layers implemented with solid coverage. CI configured, no bindings, no persistence, no HTTP API.
+~6,800 LOC across 6 crates, 99 tests, all layers implemented with solid coverage. CI configured, no bindings, no persistence, no HTTP API.
 
 ---
 
@@ -38,7 +38,7 @@
 - [x] `cynepic-guardian`: EscalationManager (HITL lifecycle)
 - [x] `cynepic-router`: BudgetTracker (cost-aware routing)
 - [x] `cynepic-router`: ClassifierMetrics (confusion matrix, precision/recall/F1)
-- [x] Test coverage: 96 tests across workspace
+- [x] Test coverage: 99 tests across workspace
 
 ### 1.3 API Surface Polish
 - [ ] `#[must_use]` on all Result-returning functions

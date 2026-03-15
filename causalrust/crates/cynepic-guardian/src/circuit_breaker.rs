@@ -46,7 +46,7 @@ impl CircuitBreaker {
 
     /// Check if the circuit breaker allows the operation.
     pub async fn allow(&self) -> bool {
-        if !self.inner.is_open.load(Ordering::Relaxed) {
+        if !self.inner.is_open.load(Ordering::SeqCst) {
             return true;
         }
 
@@ -63,15 +63,15 @@ impl CircuitBreaker {
 
     /// Record a successful operation, resetting the failure count.
     pub fn record_success(&self) {
-        self.inner.failure_count.store(0, Ordering::Relaxed);
-        self.inner.is_open.store(false, Ordering::Relaxed);
+        self.inner.failure_count.store(0, Ordering::SeqCst);
+        self.inner.is_open.store(false, Ordering::SeqCst);
     }
 
     /// Record a failed operation. Trips the breaker if threshold is exceeded.
     pub async fn record_failure(&self) {
-        let count = self.inner.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let count = self.inner.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
         if count >= self.inner.failure_threshold {
-            self.inner.is_open.store(true, Ordering::Relaxed);
+            self.inner.is_open.store(true, Ordering::SeqCst);
             let mut last_tripped = self.inner.last_tripped.lock().await;
             *last_tripped = Some(Instant::now());
             tracing::warn!(
@@ -84,13 +84,13 @@ impl CircuitBreaker {
 
     /// Whether the breaker is currently open (tripped).
     pub fn is_open(&self) -> bool {
-        self.inner.is_open.load(Ordering::Relaxed)
+        self.inner.is_open.load(Ordering::SeqCst)
     }
 
     /// Reset the breaker to closed state.
     pub fn reset(&self) {
-        self.inner.failure_count.store(0, Ordering::Relaxed);
-        self.inner.is_open.store(false, Ordering::Relaxed);
+        self.inner.failure_count.store(0, Ordering::SeqCst);
+        self.inner.is_open.store(false, Ordering::SeqCst);
     }
 }
 

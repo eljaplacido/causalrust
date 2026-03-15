@@ -31,7 +31,15 @@ pub struct MetropolisHastings {
 
 impl MetropolisHastings {
     /// Create a new Metropolis-Hastings sampler.
+    ///
+    /// # Panics
+    /// Panics if `proposal_std` is not positive and finite, or if `n_samples` is 0.
     pub fn new(proposal_std: f64, warmup: usize, n_samples: usize) -> Self {
+        assert!(
+            proposal_std > 0.0 && proposal_std.is_finite(),
+            "proposal_std must be positive and finite, got {proposal_std}"
+        );
+        assert!(n_samples > 0, "n_samples must be > 0");
         Self {
             proposal_std,
             warmup,
@@ -108,8 +116,16 @@ pub struct MultiDimMH {
 
 impl MultiDimMH {
     /// Create a new multi-dimensional Metropolis-Hastings sampler.
+    ///
+    /// # Panics
+    /// Panics if `proposal_stds` is empty, contains non-positive/non-finite values, or `n_samples` is 0.
     pub fn new(proposal_stds: Vec<f64>, warmup: usize, n_samples: usize) -> Self {
         assert!(!proposal_stds.is_empty(), "proposal_stds must not be empty");
+        assert!(
+            proposal_stds.iter().all(|&s| s > 0.0 && s.is_finite()),
+            "all proposal_stds must be positive and finite"
+        );
+        assert!(n_samples > 0, "n_samples must be > 0");
         Self {
             proposal_stds,
             warmup,

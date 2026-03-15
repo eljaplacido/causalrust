@@ -177,13 +177,11 @@ cynepic-causal reads Arrow/Parquet natively (via Polars). Integrate into Spark (
 
 ## Status & Roadmap
 
-**Now (v0.1):** All 6 crates working with MVP implementations. ~2,200 LOC, ~33 tests.
+**Now (v0.2):** All 6 crates production-ready. ~6,800 LOC, 99 tests. Full causal pipeline (DAG → identify → estimate → refute), 4 conjugate priors + 3 MCMC samplers, policy chains with Rego/circuit breaker/rate limiting/HITL escalation, cost-aware routing, typed workflow graphs with checkpointing.
 
-**Next (v0.2):** CI/CD, complete OLS estimator, expand test coverage.
+**Next (v0.3):** PyO3 Python bindings, HTTP API, MCP tool server — the accessibility layer.
 
-**Then (v0.3):** PyO3 Python bindings, HTTP API, MCP tool server — the accessibility layer.
-
-**After (v0.4+):** Embedding-based classifier, HMC/NUTS sampler, graph checkpointing, crates.io publish.
+**Then (v0.4+):** Embedding-based classifier, HMC/NUTS sampler, Cedar policies, parallel graph execution, crates.io publish.
 
 The core architecture is proven. What remains is deepening each crate's capabilities and building the integration interfaces that make it accessible to every ecosystem.
 
