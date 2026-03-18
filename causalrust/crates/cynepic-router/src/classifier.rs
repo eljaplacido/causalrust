@@ -9,8 +9,44 @@ pub struct ClassificationResult {
     pub domain: CynefinDomain,
     /// Confidence score (0.0 to 1.0).
     pub confidence: f64,
+    /// Shannon entropy of the score distribution (0.0 = certain, 1.0 = uniform).
+    ///
+    /// Low entropy indicates a concentrated, high-confidence classification.
+    /// High entropy indicates ambiguity across multiple domains.
+    pub entropy: f64,
     /// Scores for all domains, sorted descending.
     pub all_scores: Vec<(CynefinDomain, f64)>,
+}
+
+/// Compute normalized Shannon entropy over classification scores.
+///
+/// Returns a value in [0.0, 1.0] where 0.0 = all mass on one domain
+/// and 1.0 = uniform distribution across all domains.
+fn shannon_entropy(scores: &[(CynefinDomain, f64)]) -> f64 {
+    let total: f64 = scores.iter().map(|(_, s)| *s).sum();
+    if total <= 0.0 {
+        return 1.0; // Maximum uncertainty when no signal
+    }
+    let n = scores.len() as f64;
+    if n <= 1.0 {
+        return 0.0;
+    }
+    let max_entropy = n.ln();
+    if max_entropy <= 0.0 {
+        return 0.0;
+    }
+    let entropy: f64 = scores
+        .iter()
+        .map(|(_, s)| {
+            let p = s / total;
+            if p > 0.0 {
+                -p * p.ln()
+            } else {
+                0.0
+            }
+        })
+        .sum();
+    entropy / max_entropy
 }
 
 /// Trait for query classifiers that map natural language to Cynefin domains.
@@ -90,6 +126,8 @@ impl QueryClassifier for KeywordClassifier {
 
         all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+        let entropy = shannon_entropy(&all_scores);
+
         let (domain, confidence) = if all_scores.is_empty() || all_scores[0].1 == 0.0 {
             (CynefinDomain::Disorder, 0.0)
         } else {
@@ -99,6 +137,7 @@ impl QueryClassifier for KeywordClassifier {
         Ok(ClassificationResult {
             domain,
             confidence,
+            entropy,
             all_scores,
         })
     }

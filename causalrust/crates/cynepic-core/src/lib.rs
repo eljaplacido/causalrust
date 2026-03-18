@@ -8,10 +8,12 @@
 
 mod domain;
 mod engine;
+pub mod epistemic;
 mod error;
 mod policy;
 
 pub use domain::CynefinDomain;
 pub use engine::AnalyticalEngine;
+pub use epistemic::{ConfidenceLevel, EpistemicState, ReasoningStep};
 pub use error::CynepicError;
 pub use policy::{AuditEntry, EscalationTarget, PolicyDecision};

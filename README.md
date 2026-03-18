@@ -18,14 +18,14 @@ Most agent frameworks focus on LLM orchestration. cynepic-rs provides the **miss
 
 | Crate | Description | Tests |
 |-------|-------------|-------|
-| **[cynepic-core](causalrust/crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry` | 8 |
-| **[cynepic-guardian](causalrust/crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, audit trail | 22 |
-| **[cynepic-causal](causalrust/crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation | 26 |
-| **[cynepic-router](causalrust/crates/cynepic-router)** | Cynefin classifier, cost-aware routing, budget tracking, classifier metrics (F1/precision/recall) | 13 |
+| **[cynepic-core](causalrust/crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry`, `EpistemicState` | 13 |
+| **[cynepic-guardian](causalrust/crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail | 25 |
+| **[cynepic-causal](causalrust/crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation, counterfactual reasoning | 30 |
+| **[cynepic-router](causalrust/crates/cynepic-router)** | Cynefin classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics | 17 |
 | **[cynepic-bayes](causalrust/crates/cynepic-bayes)** | Beta/Normal/Gamma/Dirichlet priors, MH/Adaptive/Multi-dim MCMC, belief tracking, tool reliability | 20 |
 | **[cynepic-graph](causalrust/crates/cynepic-graph)** | Typed `StateGraph<S>`, conditional edges, cycle detection, per-node timeout, checkpointing, event hooks | 10 |
 
-**Total: 99 tests, ~6,800 LOC across 6 crates.**
+**Total: 115 tests, ~7,800 LOC across 6 crates.**
 
 ## Quick Start
 
@@ -170,7 +170,7 @@ let result = graph.execute(-5, 10).await.unwrap(); // 10
 
 ## License
 
-[Business Source License 1.1](LICENSE)
+[Business Source License 1.1](LICENSE) — see [NOTICE](NOTICE) for IP classification and trademark attribution.
 
 - **Free** for personal, academic, research, educational, evaluation, and development use
 - **Commercial/production** use requires a paid license — contact eljailari.suhonen@gmail.com

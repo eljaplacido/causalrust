@@ -15,6 +15,7 @@
 //! ```
 
 pub mod audit;
+pub mod bias_audit;
 pub mod circuit_breaker;
 pub mod hitl;
 pub mod loop_detector;
@@ -23,6 +24,7 @@ pub mod rate_limiter;
 pub mod risk;
 
 pub use audit::AuditTrail;
+pub use bias_audit::{BiasAuditResult, BiasAuditor};
 pub use circuit_breaker::CircuitBreaker;
 pub use hitl::{EscalationEvent, EscalationManager, EscalationStatus};
 pub use loop_detector::{LoopDetector, LoopViolation};

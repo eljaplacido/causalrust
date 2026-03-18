@@ -12,25 +12,27 @@
 ```
 causalrust/                    # Git root
 ├── CLAUDE.md                  # This file (agentic nav)
+├── NOTICE                     # IP classification & trademark attribution
+├── LICENSE                    # BSL-1.1
 ├── causalrust/                # Cargo workspace root
 │   ├── Cargo.toml             # Workspace manifest (resolver 2)
 │   ├── Cargo.lock             # Pinned dependencies
 │   ├── README.md              # Quick start
 │   ├── crates/
-│   │   ├── cynepic-core/      # Shared types, traits, errors
-│   │   ├── cynepic-guardian/   # Policy guardrails, circuit breaker, audit
-│   │   ├── cynepic-causal/    # Causal inference (DAG, ATE, refutation)
-│   │   ├── cynepic-router/    # Cynefin semantic classifier + routing
+│   │   ├── cynepic-core/      # Shared types, traits, errors, epistemic state
+│   │   ├── cynepic-guardian/   # Policy guardrails, circuit breaker, bias audit
+│   │   ├── cynepic-causal/    # Causal inference (DAG, ATE, counterfactual)
+│   │   ├── cynepic-router/    # Cynefin classifier + routing + drift detection
 │   │   ├── cynepic-bayes/     # Bayesian priors, MH sampler, belief state
 │   │   └── cynepic-graph/     # StateGraph<S> workflow orchestration
-│   ├── EXPERIMENTS.md         # Hands-on copy-paste experiments
+│   ├── EXPERIMENTS.md         # Quick-start examples
 │   └── docs/
-│       ├── architecture.md    # Full architecture reference
+│       ├── architecture.md    # Architecture overview
 │       ├── integration.md     # Interop guide (Python, TS, Java, MCP)
 │       ├── roadmap.md         # Completion roadmap with phases
-│       ├── CRATE_GUIDE.md     # Per-crate developer guide
-│       ├── WORKFLOWS.md       # Real-world workflow patterns
-│       └── PITCH.md           # Positioning and value proposition
+│       ├── CRATE_GUIDE.md     # Per-crate public API guide
+│       ├── WORKFLOWS.md       # Workflow integration patterns
+│       └── PITCH.md           # Positioning summary
 ```
 
 ## Build & Test
@@ -68,12 +70,16 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `AnalyticalEngine` | core | Async trait for domain-specific analysis |
 | `PolicyDecision` | core | Approve / Reject { reason } / Escalate { target } |
 | `AuditEntry` | core | Append-only audit record (UUID, timestamp, decision) |
+| `EpistemicState` | core | Unified session provenance (domain, confidence, reasoning chain) |
+| `ConfidenceLevel` | core | Discretized confidence: High / Medium / Low / Unknown |
+| `ReasoningStep` | core | Single step in the epistemic reasoning chain |
 | `CircuitBreaker` | guardian | State machine: Closed → Open → HalfOpen |
 | `PolicyChain` | guardian | Sequential evaluator chain, short-circuits on reject |
 | `LoopDetector` | guardian | Detects node overvisits and alternation thrashing |
 | `RiskAwareEvaluator` | guardian | Bayesian risk score → approve/escalate/reject |
 | `RateLimiter` | guardian | Token-bucket rate limiting per action/actor |
 | `EscalationManager` | guardian | HITL escalation lifecycle (pending/approved/rejected/timed-out) |
+| `BiasAuditor` | guardian | Chi-squared fairness testing on decision distributions |
 | `CausalDag` | causal | petgraph-backed DAG with parent/child queries |
 | `d_separated` | causal | Bayes-Ball d-separation test on DAG |
 | `BackdoorCriterion` | causal | Finds valid adjustment sets for causal identification |
@@ -82,6 +88,8 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `PropensityScoreEstimator` | causal | IPW estimation via logistic regression |
 | `IVEstimator` | causal | Two-stage least squares (2SLS) |
 | `ATEResult` | causal | Average Treatment Effect + standard error |
+| `CounterfactualEngine` | causal | Level-3 counterfactual queries (Pearl's ladder) |
+| `CounterfactualQuery` | causal | "What would Y be if T had been t'?" |
 | `BetaBinomial` | bayes | Conjugate prior for binary outcomes |
 | `DirichletMultinomial` | bayes | Conjugate prior for categorical data |
 | `MetropolisHastings` | bayes | 1D MCMC sampler for arbitrary log-densities |
@@ -93,6 +101,7 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `CynefinRouter` | router | Classifier → domain → route target (budget-aware) |
 | `BudgetTracker` | router | Cost tracking with tier-based budget enforcement |
 | `ClassifierMetrics` | router | Confusion matrix, precision/recall/F1, misrouting cost |
+| `DriftDetector` | router | KL-divergence routing distribution drift monitoring |
 | `StateGraph<S>` | graph | Typed async workflow graph with conditional edges |
 | `Checkpoint<S>` | graph | Serializable execution snapshot for pause/resume |
 | `GraphHook` | graph | Event hook trait for observability (NodeStarted/Completed/Failed) |
@@ -111,14 +120,14 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 
 | Crate | Status | Tests | Key Capabilities |
 |-------|--------|-------|-----------------|
-| core | Complete | 8 | Domain enum, engine trait, policy types, audit types |
-| guardian | Solid | 22 | Policy chains, Rego, circuit breaker, loop detection, rate limiting, HITL escalation, audit trail |
-| causal | Solid | 26 | DAG, d-separation, backdoor/front-door, OLS, IPW, IV/2SLS, 4 refutation tests |
-| router | Solid | 13 | Keyword classifier, cost-aware routing, budget tracking, classifier metrics (F1) |
+| core | Complete | 13 | Domain enum, engine trait, policy types, audit types, epistemic state |
+| guardian | Solid | 25 | Policy chains, Rego, circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
+| causal | Solid | 30 | DAG, d-separation, backdoor/front-door, OLS, IPW, IV/2SLS, 4 refutation tests, counterfactual reasoning |
+| router | Solid | 17 | Keyword classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics (F1) |
 | bayes | Solid | 20 | 4 conjugate priors, 3 MCMC samplers, belief tracker, tool reliability |
 | graph | Solid | 10 | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 
-**Total: 99 tests, ~6,800 LOC, 0 warnings.**
+**Total: 115 tests, ~7,800 LOC, 0 warnings.**
 
 ### Future Work (not blocking release)
 - **Phase 2**: PyO3 bindings, HTTP API (Axum), MCP tool server, WASM target

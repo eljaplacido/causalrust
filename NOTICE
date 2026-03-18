@@ -1,0 +1,78 @@
+NOTICE — cynepic-rs
+
+Copyright 2026 Elja Placido.
+Licensed under the Business Source License 1.1 (see LICENSE).
+
+================================================================================
+
+Trademark Notice
+================================================================================
+
+"CARF" (Complexity-Adaptive & Context-Aware Reasoning Fabric) and "CYNEPIC"
+are trademarks of Cisuregen. cynepic-rs is an authorized Rust implementation
+of the CARF/CYNEPIC architecture, developed under license from the trademark
+holder.
+
+The use of these names in this project does not imply endorsement by Cisuregen
+of any derivative works or modifications made by third parties.
+
+================================================================================
+
+IP Classification
+================================================================================
+
+This project contains implementations organized into the following tiers:
+
+Tier 1 — Original Innovations (proprietary to CARF/CYNEPIC):
+  - Entropy-aware Cynefin routing logic
+  - Deterministic Guardian enforcement architecture
+  - EpistemicState provenance schema
+  - Complexity-adaptive decision pipeline (router → engine → guardian → graph)
+
+Tier 2 — Proprietary Orchestration (novel compositions of known methods):
+  - Causal inference pipeline integration (DAG → identify → estimate → refute)
+  - Bayesian belief tracking with tool reliability monitoring
+  - Policy chain evaluation with circuit breaker and loop detection
+  - Risk-aware policy evaluation combining Bayesian scores and governance
+
+Tier 3 — Supporting Infrastructure (standard patterns, project-specific):
+  - Append-only audit trail
+  - Budget-aware routing
+  - Workflow graph orchestration
+  - HITL escalation lifecycle
+
+Tier 4 — Third-Party (no IP claim):
+  - petgraph (graph algorithms)
+  - ndarray (numerical arrays)
+  - statrs (statistical distributions)
+  - regorus (Rego policy evaluation)
+  - serde (serialization)
+  - tokio (async runtime)
+
+Trade secrets explicitly NOT included in this repository:
+  - Specific threshold calibrations and scoring weights
+  - Trained model artifacts
+  - Policy enforcement matrices
+  - Production deployment configurations
+
+================================================================================
+
+Third-Party Licenses
+================================================================================
+
+This project depends on open-source libraries. See Cargo.lock for the full
+dependency tree. All direct dependencies use permissive licenses (MIT, Apache
+2.0, or BSD-3-Clause).
+
+================================================================================
+
+Framework Attribution
+================================================================================
+
+cynepic-rs implements concepts from:
+
+  - The Cynefin framework by Dave Snowden (public domain framework)
+  - Pearl's causal inference framework (published academic methodology)
+  - The Bayes-Ball algorithm by Shachter (published algorithm)
+  - The Metropolis-Hastings algorithm (published statistical method)
+  - The circuit breaker pattern by Martin Fowler (published pattern)
