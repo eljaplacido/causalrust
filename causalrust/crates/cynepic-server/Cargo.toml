@@ -1,0 +1,25 @@
+[package]
+name = "cynepic-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Axum HTTP API server for cynepic-rs — CARF/CYNEPIC decision intelligence endpoints"
+
+[dependencies]
+cynepic-core = { path = "../cynepic-core" }
+cynepic-router = { path = "../cynepic-router" }
+cynepic-causal = { path = "../cynepic-causal" }
+cynepic-bayes = { path = "../cynepic-bayes" }
+cynepic-guardian = { path = "../cynepic-guardian", default-features = false }
+cynepic-graph = { path = "../cynepic-graph" }
+axum = "0.8"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+tower-http = { version = "0.6", features = ["cors"] }

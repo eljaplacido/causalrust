@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 
+/// Error type for prior parameter validation.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum PriorError {
+    #[error("alpha must be positive (got {0})")]
+    AlphaNotPositive(f64),
+    #[error("beta must be positive (got {0})")]
+    BetaNotPositive(f64),
+    #[error("prior variance must be positive (got {0})")]
+    PriorVarianceNotPositive(f64),
+    #[error("observation variance must be positive (got {0})")]
+    ObsVarianceNotPositive(f64),
+    #[error("alphas must not be empty")]
+    AlphasEmpty,
+    #[error("all alphas must be positive (found non-positive at index {0})")]
+    AlphasNotPositive(usize),
+    #[error("k must be at least 1 (got {0})")]
+    KZero(usize),
+    #[error("category index {idx} out of bounds (k={k})")]
+    CategoryOutOfBounds { idx: usize, k: usize },
+    #[error("counts length {count_len} does not match categories {cat_len}")]
+    CountsMismatch { count_len: usize, cat_len: usize },
+}
+
+pub type PriorResult<T> = Result<T, PriorError>;
+
 /// Beta-Binomial conjugate prior for binary outcomes.
 ///
 /// Models the probability of success (e.g., conversion rate, CTR).
@@ -12,15 +37,19 @@ pub struct BetaBinomial {
 
 impl BetaBinomial {
     /// Create a new Beta-Binomial model with the given prior parameters.
-    pub fn new(alpha: f64, beta: f64) -> Self {
-        assert!(alpha > 0.0, "alpha must be positive");
-        assert!(beta > 0.0, "beta must be positive");
-        Self { alpha, beta }
+    pub fn new(alpha: f64, beta: f64) -> PriorResult<Self> {
+        if alpha <= 0.0 {
+            return Err(PriorError::AlphaNotPositive(alpha));
+        }
+        if beta <= 0.0 {
+            return Err(PriorError::BetaNotPositive(beta));
+        }
+        Ok(Self { alpha, beta })
     }
 
     /// Uniform (non-informative) prior: Beta(1, 1).
     pub fn uniform() -> Self {
-        Self::new(1.0, 1.0)
+        Self { alpha: 1.0, beta: 1.0 }
     }
 
     /// Update the posterior with observed successes and failures.
@@ -75,14 +104,18 @@ pub struct NormalNormal {
 
 impl NormalNormal {
     /// Create a new Normal-Normal model.
-    pub fn new(mu: f64, prior_variance: f64, obs_variance: f64) -> Self {
-        assert!(prior_variance > 0.0, "prior variance must be positive");
-        assert!(obs_variance > 0.0, "observation variance must be positive");
-        Self {
+    pub fn new(mu: f64, prior_variance: f64, obs_variance: f64) -> PriorResult<Self> {
+        if prior_variance <= 0.0 {
+            return Err(PriorError::PriorVarianceNotPositive(prior_variance));
+        }
+        if obs_variance <= 0.0 {
+            return Err(PriorError::ObsVarianceNotPositive(obs_variance));
+        }
+        Ok(Self {
             mu,
             precision: 1.0 / prior_variance,
             obs_precision: 1.0 / obs_variance,
-        }
+        })
     }
 
     /// Update the posterior with a batch of observations.
@@ -130,33 +163,38 @@ pub struct DirichletMultinomial {
 
 impl DirichletMultinomial {
     /// Create a new Dirichlet-Multinomial model with the given concentration parameters.
-    pub fn new(alphas: Vec<f64>) -> Self {
-        assert!(!alphas.is_empty(), "alphas must not be empty");
-        assert!(
-            alphas.iter().all(|&a| a > 0.0),
-            "all alphas must be positive"
-        );
-        Self { alphas }
+    pub fn new(alphas: Vec<f64>) -> PriorResult<Self> {
+        if alphas.is_empty() {
+            return Err(PriorError::AlphasEmpty);
+        }
+        if let Some(idx) = alphas.iter().position(|&a| a <= 0.0) {
+            return Err(PriorError::AlphasNotPositive(idx));
+        }
+        Ok(Self { alphas })
     }
 
     /// Symmetric uniform prior: Dirichlet(1, 1, ..., 1) with k categories.
-    pub fn uniform(k: usize) -> Self {
-        assert!(k > 0, "k must be at least 1");
-        Self {
-            alphas: vec![1.0; k],
+    pub fn uniform(k: usize) -> PriorResult<Self> {
+        if k == 0 {
+            return Err(PriorError::KZero(k));
         }
+        Ok(Self {
+            alphas: vec![1.0; k],
+        })
     }
 
     /// Update the posterior with observed category counts.
-    pub fn update(&mut self, counts: &[usize]) {
-        assert_eq!(
-            counts.len(),
-            self.alphas.len(),
-            "counts length must match number of categories"
-        );
+    pub fn update(&mut self, counts: &[usize]) -> PriorResult<()> {
+        if counts.len() != self.alphas.len() {
+            return Err(PriorError::CountsMismatch {
+                count_len: counts.len(),
+                cat_len: self.alphas.len(),
+            });
+        }
         for (alpha, &count) in self.alphas.iter_mut().zip(counts.iter()) {
             *alpha += count as f64;
         }
+        Ok(())
     }
 
     /// Posterior mean: normalized concentration parameters.
@@ -192,23 +230,27 @@ impl DirichletMultinomial {
 
     /// Marginal mean for a single category.
     ///
-    /// # Panics
-    /// Panics if `i >= self.k()`.
-    pub fn marginal_mean(&self, i: usize) -> f64 {
-        assert!(i < self.alphas.len(), "category index {i} out of bounds (k={})", self.alphas.len());
+    /// Returns `PriorError::CategoryOutOfBounds` if `i >= self.k()`.
+    pub fn marginal_mean(&self, i: usize) -> PriorResult<f64> {
+        let k = self.alphas.len();
+        if i >= k {
+            return Err(PriorError::CategoryOutOfBounds { idx: i, k });
+        }
         let total: f64 = self.alphas.iter().sum();
-        self.alphas[i] / total
+        Ok(self.alphas[i] / total)
     }
 
     /// Marginal variance for a single category.
     ///
-    /// # Panics
-    /// Panics if `i >= self.k()`.
-    pub fn marginal_variance(&self, i: usize) -> f64 {
-        assert!(i < self.alphas.len(), "category index {i} out of bounds (k={})", self.alphas.len());
+    /// Returns `PriorError::CategoryOutOfBounds` if `i >= self.k()`.
+    pub fn marginal_variance(&self, i: usize) -> PriorResult<f64> {
+        let k = self.alphas.len();
+        if i >= k {
+            return Err(PriorError::CategoryOutOfBounds { idx: i, k });
+        }
         let total: f64 = self.alphas.iter().sum();
         let ai = self.alphas[i];
-        (ai * (total - ai)) / (total * total * (total + 1.0))
+        Ok((ai * (total - ai)) / (total * total * (total + 1.0)))
     }
 }
 
@@ -226,10 +268,14 @@ pub struct GammaPoisson {
 
 impl GammaPoisson {
     /// Create a new Gamma-Poisson model.
-    pub fn new(alpha: f64, beta: f64) -> Self {
-        assert!(alpha > 0.0, "alpha must be positive");
-        assert!(beta > 0.0, "beta must be positive");
-        Self { alpha, beta }
+    pub fn new(alpha: f64, beta: f64) -> PriorResult<Self> {
+        if alpha <= 0.0 {
+            return Err(PriorError::AlphaNotPositive(alpha));
+        }
+        if beta <= 0.0 {
+            return Err(PriorError::BetaNotPositive(beta));
+        }
+        Ok(Self { alpha, beta })
     }
 
     /// Update with observed counts.
@@ -274,7 +320,7 @@ mod tests {
 
     #[test]
     fn normal_normal_update() {
-        let mut model = NormalNormal::new(0.0, 10.0, 1.0);
+        let mut model = NormalNormal::new(0.0, 10.0, 1.0).unwrap();
         model.update(&[5.0, 5.0, 5.0, 5.0, 5.0]);
         // Posterior should be pulled toward 5.0
         assert!((model.mean() - 5.0).abs() < 0.5);
@@ -282,7 +328,7 @@ mod tests {
 
     #[test]
     fn gamma_poisson_update() {
-        let mut model = GammaPoisson::new(1.0, 1.0);
+        let mut model = GammaPoisson::new(1.0, 1.0).unwrap();
         model.update(&[3, 4, 5, 6, 7]);
         // Posterior: Gamma(1+25, 1+5) = Gamma(26, 6), mean ≈ 4.33
         assert!((model.mean() - 4.33).abs() < 0.1);
@@ -290,7 +336,7 @@ mod tests {
 
     #[test]
     fn dirichlet_multinomial_uniform_mean() {
-        let model = DirichletMultinomial::uniform(3);
+        let model = DirichletMultinomial::uniform(3).unwrap();
         let mean = model.mean();
         assert_eq!(mean.len(), 3);
         for m in &mean {
@@ -300,8 +346,8 @@ mod tests {
 
     #[test]
     fn dirichlet_multinomial_update() {
-        let mut model = DirichletMultinomial::uniform(3);
-        model.update(&[10, 5, 5]);
+        let mut model = DirichletMultinomial::uniform(3).unwrap();
+        model.update(&[10, 5, 5]).unwrap();
         // Posterior: Dirichlet(11, 6, 6), mean = [11/23, 6/23, 6/23]
         let mean = model.mean();
         assert!((mean[0] - 11.0 / 23.0).abs() < 1e-10);
@@ -312,14 +358,14 @@ mod tests {
 
     #[test]
     fn dirichlet_multinomial_mode_and_variance() {
-        let model = DirichletMultinomial::new(vec![3.0, 2.0, 5.0]);
+        let model = DirichletMultinomial::new(vec![3.0, 2.0, 5.0]).unwrap();
         let mode = model.mode();
         // (3-1)/(10-3)=2/7, (2-1)/(10-3)=1/7, (5-1)/(10-3)=4/7
         assert!((mode[0] - 2.0 / 7.0).abs() < 1e-10);
         assert!((mode[2] - 4.0 / 7.0).abs() < 1e-10);
 
         // Marginal variance for category 0: 3*(10-3)/(10*10*11) = 21/1100
-        let var0 = model.marginal_variance(0);
+        let var0 = model.marginal_variance(0).unwrap();
         assert!((var0 - 21.0 / 1100.0).abs() < 1e-10);
     }
 }

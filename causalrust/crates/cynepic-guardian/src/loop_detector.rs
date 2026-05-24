@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Detects repetitive execution patterns in workflow graphs.
 /// Tracks node visits and edge traversals to identify loops and thrashing.
@@ -12,7 +12,7 @@ pub struct LoopDetector {
     /// Track visit counts per node.
     visit_counts: HashMap<String, usize>,
     /// Recent node execution history (for pattern detection).
-    history: Vec<String>,
+    history: VecDeque<String>,
     /// Max history length to retain.
     max_history: usize,
 }
@@ -47,7 +47,7 @@ impl LoopDetector {
             max_node_visits,
             max_alternations,
             visit_counts: HashMap::new(),
-            history: Vec::new(),
+            history: VecDeque::new(),
             max_history: max_alternations * 4, // keep enough history for detection
         }
     }
@@ -60,9 +60,9 @@ impl LoopDetector {
         let visits = *count;
 
         // Update history
-        self.history.push(node_id.to_string());
+        self.history.push_back(node_id.to_string());
         if self.history.len() > self.max_history {
-            self.history.remove(0);
+            self.history.pop_front();
         }
 
         // Check for overvisit first
@@ -99,18 +99,27 @@ impl LoopDetector {
             return None;
         }
 
-        let window = &self.history[self.history.len() - window_size..];
+        // Collect recent entries into a Vec for indexing
+        let recent: Vec<&str> = self.history
+            .iter()
+            .rev()
+            .take(window_size)
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
 
         // All even-indexed entries should be the same node, all odd-indexed the other
-        let node_a = &window[0];
-        let node_b = &window[1];
+        let node_a = recent[0];
+        let node_b = recent[1];
 
         // Must be two distinct nodes
         if node_a == node_b {
             return None;
         }
 
-        let is_alternating = window.iter().enumerate().all(|(i, node)| {
+        let is_alternating = recent.iter().enumerate().all(|(i, &node)| {
             if i % 2 == 0 {
                 node == node_a
             } else {
@@ -120,8 +129,8 @@ impl LoopDetector {
 
         if is_alternating {
             Some(LoopViolation::AlternationDetected {
-                node_a: node_a.clone(),
-                node_b: node_b.clone(),
+                node_a: node_a.to_string(),
+                node_b: node_b.to_string(),
                 count: self.max_alternations,
                 limit: self.max_alternations,
             })
@@ -136,9 +145,9 @@ impl LoopDetector {
         self.history.clear();
     }
 
-    /// Get the full execution history.
-    pub fn history(&self) -> &[String] {
-        &self.history
+    /// Get the full execution history as a slice.
+    pub fn history(&self) -> Vec<&str> {
+        self.history.iter().map(|s| s.as_str()).collect()
     }
 }
 

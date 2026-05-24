@@ -29,9 +29,28 @@ impl AuditTrail {
         entries.push(entry);
     }
 
-    /// Get all entries (clone).
+    /// Get all entries (clones the entire Vec — O(n) memory).
+    ///
+    /// For large audit trails, prefer [`recent_entries`] or [`iter`].
     pub fn entries(&self) -> Vec<AuditEntry> {
         self.entries.lock().expect("audit trail lock poisoned").clone()
+    }
+
+    /// Get the most recent `limit` entries (O(limit) memory).
+    pub fn recent_entries(&self, limit: usize) -> Vec<AuditEntry> {
+        let entries = self.entries.lock().expect("audit trail lock poisoned");
+        entries.iter().rev().take(limit).rev().cloned().collect()
+    }
+
+    /// Apply a closure to audit entries while holding the lock.
+    ///
+    /// Prefer this over [`entries`] for large audit trails to avoid full clone.
+    pub fn with_entries<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[AuditEntry]) -> R,
+    {
+        let entries = self.entries.lock().expect("audit trail lock poisoned");
+        f(&entries)
     }
 
     /// Get the number of entries.

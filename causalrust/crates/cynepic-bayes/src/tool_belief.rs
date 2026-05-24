@@ -4,7 +4,7 @@
 //! models, or services using Beta-Binomial inference, and `ToolBeliefSet`
 //! for managing beliefs about multiple tools simultaneously.
 
-use crate::priors::BetaBinomial;
+use crate::priors::{BetaBinomial, PriorError, PriorResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -36,14 +36,14 @@ impl ToolBelief {
     }
 
     /// Create a new tool belief with a custom prior Beta(alpha, beta).
-    pub fn with_prior(name: impl Into<String>, alpha: f64, beta: f64) -> Self {
-        Self {
+    pub fn with_prior(name: impl Into<String>, alpha: f64, beta: f64) -> PriorResult<Self> {
+        Ok(Self {
             name: name.into(),
-            prior: BetaBinomial::new(alpha, beta),
+            prior: BetaBinomial::new(alpha, beta)?,
             total_calls: 0,
             recent_failures: 0,
             last_updated: None,
-        }
+        })
     }
 
     /// Record a successful call.
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn custom_prior() {
-        let tool = ToolBelief::with_prior("strong-tool", 10.0, 1.0);
+        let tool = ToolBelief::with_prior("strong-tool", 10.0, 1.0).unwrap();
         // Prior mean = 10/11 ≈ 0.909
         assert!(tool.reliability() > 0.9);
         assert!(tool.is_reliable(0.8));
