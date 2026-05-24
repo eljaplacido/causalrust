@@ -22,7 +22,6 @@
 //! let adjustment = BackdoorCriterion::find(&dag, "smoking", "cancer");
 //! ```
 
-pub mod counterfactual;
 pub mod dag;
 pub mod dsep;
 pub mod estimate;
@@ -30,7 +29,6 @@ pub mod identify;
 pub mod refute;
 
 // Re-export key public types for convenience.
-pub use counterfactual::{CounterfactualEngine, CounterfactualQuery, CounterfactualResult};
 pub use dag::CausalDag;
 pub use dsep::d_separated;
 pub use estimate::iv::IVEstimator;
