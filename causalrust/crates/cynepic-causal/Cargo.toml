@@ -18,6 +18,9 @@ ndarray = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+# Ground-truth simulation and the coverage harness. Internal, publish = false,
+# so it never reaches a consumer of this crate.
+cynepic-testkit = { workspace = true }
 
 [lints]
 workspace = true

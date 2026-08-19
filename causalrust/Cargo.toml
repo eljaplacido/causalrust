@@ -7,6 +7,7 @@ members = [
     "crates/cynepic-causal",
     "crates/cynepic-bayes",
     "crates/cynepic-graph",
+    "crates/cynepic-testkit",
 ]
 
 [workspace.package]
@@ -40,6 +41,10 @@ async-trait = "0.1"
 # Keep the version in step with workspace.package.version on every release.
 cynepic-core = { path = "crates/cynepic-core", version = "0.2.0" }
 
+# Internal validation harness: ground-truth DGPs and the coverage machinery.
+# `publish = false`, and used only as a dev-dependency, so it never appears in a
+# consumer's dependency tree. No `version` key for exactly that reason.
+cynepic-testkit = { path = "crates/cynepic-testkit" }
 
 # cynepic-guardian
 # Pinned to an exact minor: regorus 0.5 parses Rego v1 by default, and the
@@ -56,6 +61,9 @@ ndarray = "0.16"
 statrs = "0.18"
 rand = "0.9"
 rand_distr = "0.5"
+# Reproducible, statistically sound RNG. Replaces the hand-rolled LCG in
+# refute.rs (finding C8) and seeds every simulation in cynepic-testkit.
+rand_chacha = "0.9"
 
 # Planned (v0.3+) — uncomment when needed
 # axum = "0.8"

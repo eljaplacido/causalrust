@@ -219,6 +219,7 @@ version = "0.2.0"
 dependencies = [
  "approx",
  "cynepic-core",
+ "cynepic-testkit",
  "ndarray",
  "petgraph",
  "serde",
@@ -279,6 +280,17 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cynepic-testkit"
+version = "0.2.0"
+dependencies = [
+ "ndarray",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "rand_distr 0.5.1",
+ "serde",
 ]
 
 [[package]]
