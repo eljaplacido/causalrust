@@ -51,6 +51,6 @@ Each crate is independently publishable. Use one, use all, or compose them.
 
 ## License
 
-[Business Source License 1.1](../../LICENSE) — free for non-production use, converts to Apache 2.0 on 2030-03-13.
+[Apache License 2.0](../../LICENSE) — free for any use, including commercial and production, with a patent grant. Relicensed from BSL 1.1 on 2026-08-17.
 
 See [NOTICE](../../NOTICE) for trademark attribution and IP classification.

@@ -12,32 +12,45 @@ Most agent frameworks focus on LLM orchestration. cynepic-rs provides the **miss
 - **Calibrated uncertainty** — Bayesian beliefs instead of ad-hoc confidence scores
 - **Formal governance** — Rego/Cedar policies with append-only audit trails
 - **Type-safe orchestration** — `StateGraph<S>` with compile-time guarantees
-- **Microsecond latency** — Rust-native, embeddable in any service
+- **Rust-native** — no GC pauses, no Python runtime, embeddable in any service
 
 ## Crates
 
 | Crate | Description | Tests |
 |-------|-------------|-------|
 | **[cynepic-core](crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry`, `EpistemicState` | 13 |
-| **[cynepic-guardian](crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail | 25 |
+| **[cynepic-guardian](crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail | 30 |
 | **[cynepic-causal](crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation, counterfactual reasoning | 30 |
 | **[cynepic-router](crates/cynepic-router)** | Cynefin classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics | 17 |
 | **[cynepic-bayes](crates/cynepic-bayes)** | Beta/Normal/Gamma/Dirichlet priors, MH/Adaptive/Multi-dim MCMC, belief tracking, tool reliability | 20 |
 | **[cynepic-graph](crates/cynepic-graph)** | Typed `StateGraph<S>`, conditional edges, cycle detection, per-node timeout, checkpointing, event hooks | 10 |
 
-**Total: 115 tests, ~7,800 LOC across 6 crates.**
+**Total: 120 unit tests + 2 doctests, ~8,100 LOC across 6 crates.**
+
+> **Maturity.** Pre-1.0, not yet published to crates.io. The causal estimators
+> are being hardened — see [docs/roadmap.md](docs/roadmap.md) for the known
+> correctness gaps and the tier that closes each. No performance claims are made
+> until the benchmark suite lands.
 
 ## Quick Start
 
 ```bash
-cd causalrust
 cargo build --workspace
-cargo test --workspace             # Run all 115 tests
-cargo test -p cynepic-causal       # Single crate
-cargo doc --workspace --no-deps    # Generate API docs
+cargo test --workspace --all-features   # 120 unit tests + 2 doctests
+cargo test -p cynepic-causal            # Single crate
+cargo doc --workspace --no-deps         # Generate API docs
 ```
 
 **Requirements:** Rust 1.85+ (edition 2024)
+
+Before opening a PR, run what CI runs:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo deny check all                    # requires: cargo install cargo-deny
+```
 
 ## Architecture
 
@@ -202,8 +215,6 @@ assert_eq!(result, -20); // |-20| = 20, 20 > 10, so negate: -20
 
 ## License
 
-[Business Source License 1.1](../LICENSE)
+[Apache License 2.0](../LICENSE) — free for any use, including commercial and production, with a patent grant.
 
-- **Free** for personal, academic, research, educational, evaluation, and development use
-- **Commercial/production** use requires a paid license — contact eljailari.suhonen@gmail.com
-- **Converts to Apache-2.0** on 2030-03-13 (4-year change date)
+Relicensed from BSL 1.1 on 2026-08-17. See [NOTICE](../NOTICE) for trademark attribution.

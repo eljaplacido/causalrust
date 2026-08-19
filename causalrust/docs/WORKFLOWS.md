@@ -2,7 +2,7 @@
 
 > High-level patterns for integrating cynepic-rs into software development, agentic AI, and DevOps/MLOps workflows.
 
-See [NOTICE](../../NOTICE) for IP classification. Detailed implementation patterns are available under commercial license.
+See [NOTICE](../../NOTICE) for trademark attribution. The code in this repository is Apache-2.0 licensed.
 
 ---
 
