@@ -46,13 +46,13 @@ use crate::error::IdentificationError;
 /// one where the structure, not the search, is the problem. Exceeding the bound
 /// reports non-identifiability rather than silently returning nothing, and the
 /// bound is named in this constant so the limitation is greppable.
-const MAX_ADJUSTMENT_SET_SIZE: usize = 4;
+pub const MAX_ADJUSTMENT_SET_SIZE: usize = 4;
 
 /// Longest path considered when reporting which backdoor paths are unblocked.
 ///
 /// Only affects the *explanation* attached to a failure, never the verdict —
 /// that comes from d-separation, which is exact.
-const MAX_REPORTED_PATH_LEN: usize = 12;
+pub const MAX_REPORTED_PATH_LEN: usize = 12;
 
 /// A verified adjustment set.
 ///

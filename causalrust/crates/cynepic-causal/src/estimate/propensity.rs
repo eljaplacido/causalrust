@@ -47,26 +47,31 @@ use crate::error::EstimationError;
 use crate::estimand::{ATEResult, Convergence, Diagnostics, Estimand, StdErrorKind};
 
 /// Convergence tolerance on the score (gradient) norm.
-const IRLS_TOL: f64 = 1e-8;
+///
+/// Public because it is part of the contract: a caller reading
+/// [`EstimationError::NotConverged`] needs to know what the fit was aiming for.
+pub const IRLS_TOL: f64 = 1e-8;
 
-/// Maximum IRLS iterations. Fisher scoring on a well-posed logistic problem
-/// converges in well under ten; reaching this many means separation or
-/// near-separation, which is a data property worth reporting.
-const IRLS_MAX_ITER: usize = 50;
+/// Maximum IRLS iterations.
+///
+/// Fisher scoring on a well-posed logistic problem converges in well under ten;
+/// reaching this many means separation or near-separation, which is a data
+/// property worth reporting rather than a limit worth raising.
+pub const IRLS_MAX_ITER: usize = 50;
 
 /// A fitted probability this close to 0 or 1 indicates separation: the
 /// likelihood has no finite maximiser and the "converged" coefficients are an
 /// artefact of where the iteration happened to stop.
-const SEPARATION_TOL: f64 = 1e-6;
+pub const SEPARATION_TOL: f64 = 1e-6;
 
 /// Propensities outside this range make a unit's weight dominate the estimate.
-const OVERLAP_LOWER: f64 = 0.02;
+pub const OVERLAP_LOWER: f64 = 0.02;
 /// Upper counterpart to [`OVERLAP_LOWER`].
-const OVERLAP_UPPER: f64 = 0.98;
+pub const OVERLAP_UPPER: f64 = 0.98;
 
 /// Fraction of units allowed outside the overlap bounds before the effect is
 /// declared not estimable by weighting.
-const MAX_EXTREME_FRACTION: f64 = 0.10;
+pub const MAX_EXTREME_FRACTION: f64 = 0.10;
 
 /// A fitted propensity model.
 ///

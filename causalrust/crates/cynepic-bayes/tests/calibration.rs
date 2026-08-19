@@ -21,7 +21,7 @@
 //! ```
 
 use cynepic_bayes::priors::{BetaBinomial, GammaPoisson, NormalNormal};
-use cynepic_bayes::sampler::{AdaptiveMH, MetropolisHastings};
+use cynepic_bayes::sampler::{AdaptiveMH, MetropolisHastings, MultiDimMH};
 use cynepic_testkit::calibration::{
     beta_credible_interval, credible_coverage, sample_beta, sample_gamma, sample_standard_normal,
     simulation_based_calibration,
@@ -431,4 +431,105 @@ fn gamma_poisson_credible_intervals_are_calibrated() {
         "GammaPoisson intervals are miscalibrated — {}",
         report.summary()
     );
+}
+
+// ===========================================================================
+// B2 — samplers were not reproducible · CLOSED
+// ===========================================================================
+
+/// The same seed must produce a byte-identical chain.
+///
+/// The samplers previously drew from `rand::rng()`, the thread-local
+/// entropy-seeded generator, so running the same sampler twice on the same
+/// log-density gave different answers with no way to recover the first. An MCMC
+/// result that cannot be reproduced cannot be audited, and every other random
+/// component in this workspace — `cynepic-testkit`'s DGPs, `cynepic-causal`'s
+/// refuters — was already seeded.
+///
+/// It was also the source of RUSTSEC-2026-0097: `rand::rng()` is unsound when a
+/// custom `log` logger reaches back into it during reseeding. Not using the
+/// thread-local generator sidesteps the class entirely.
+#[test]
+fn b2_the_same_seed_reproduces_the_chain() {
+    let density = |x: f64| -0.5 * x * x;
+
+    let a = MetropolisHastings::new(1.0, 100, 500)
+        .with_seed(42)
+        .sample(density, 0.0);
+    let b = MetropolisHastings::new(1.0, 100, 500)
+        .with_seed(42)
+        .sample(density, 0.0);
+
+    assert_eq!(a.samples.len(), b.samples.len());
+    for (i, (x, y)) in a.samples.iter().zip(&b.samples).enumerate() {
+        assert!(
+            (x - y).abs() < f64::EPSILON,
+            "chains diverged at draw {i}: {x} vs {y}"
+        );
+    }
+    assert!((a.acceptance_rate - b.acceptance_rate).abs() < f64::EPSILON);
+}
+
+/// Different seeds must produce different chains.
+///
+/// The other half: a "seeded" sampler that ignores its seed would satisfy the
+/// test above trivially.
+#[test]
+fn b2_different_seeds_give_different_chains() {
+    let density = |x: f64| -0.5 * x * x;
+
+    let a = MetropolisHastings::new(1.0, 100, 500)
+        .with_seed(1)
+        .sample(density, 0.0);
+    let b = MetropolisHastings::new(1.0, 100, 500)
+        .with_seed(2)
+        .sample(density, 0.0);
+
+    let identical = a
+        .samples
+        .iter()
+        .zip(&b.samples)
+        .all(|(x, y)| (x - y).abs() < f64::EPSILON);
+    assert!(!identical, "two seeds produced the same chain");
+}
+
+/// Seeding must apply to every sampler, not just the simplest one.
+#[test]
+fn b2_all_samplers_are_seedable() {
+    let density = |x: f64| -0.5 * x * x;
+    let multi = |v: &[f64]| -0.5 * (v[0] * v[0] + v[1] * v[1]);
+
+    let a1 = AdaptiveMH::new(0.44, 100, 300)
+        .with_seed(7)
+        .sample(density, 0.0);
+    let a2 = AdaptiveMH::new(0.44, 100, 300)
+        .with_seed(7)
+        .sample(density, 0.0);
+    assert_eq!(a1.samples, a2.samples, "AdaptiveMH is not reproducible");
+
+    let m1 = MultiDimMH::new(vec![1.0, 1.0], 100, 300)
+        .with_seed(7)
+        .sample(multi, vec![0.0, 0.0]);
+    let m2 = MultiDimMH::new(vec![1.0, 1.0], 100, 300)
+        .with_seed(7)
+        .sample(multi, vec![0.0, 0.0]);
+    assert_eq!(m1.samples, m2.samples, "MultiDimMH is not reproducible");
+}
+
+/// An unseeded sampler must still work, and must still be random.
+///
+/// Reproducibility is opt-in rather than mandatory: a caller running many
+/// independent chains wants independent chains.
+#[test]
+fn b2_unseeded_samplers_remain_random() {
+    let density = |x: f64| -0.5 * x * x;
+    let a = MetropolisHastings::new(1.0, 50, 200).sample(density, 0.0);
+    let b = MetropolisHastings::new(1.0, 50, 200).sample(density, 0.0);
+    assert_eq!(a.samples.len(), 200);
+    let identical = a
+        .samples
+        .iter()
+        .zip(&b.samples)
+        .all(|(x, y)| (x - y).abs() < f64::EPSILON);
+    assert!(!identical, "unseeded chains were identical");
 }

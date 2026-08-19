@@ -7,8 +7,29 @@
 //! - Hamiltonian Monte Carlo (HMC) via Burn autodiff
 //! - No U-Turn Sampler (NUTS)
 
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
+
+/// Build the chain's generator.
+///
+/// `ChaCha8Rng`, seeded explicitly when the caller asked for it and from the OS
+/// otherwise. Two reasons this is not `rand::rng()`:
+///
+/// 1. **Reproducibility.** `rand::rng()` is a thread-local generator seeded from
+///    entropy, so the same call twice produced a different chain. An MCMC result
+///    that cannot be reproduced cannot be audited, and every other random
+///    component in this workspace is seeded — `cynepic-testkit`'s DGPs and
+///    `cynepic-causal`'s refuters both are.
+/// 2. **Soundness.** RUSTSEC-2026-0097 reports `rand::rng()` as unsound when a
+///    custom `log` logger reaches back into it during reseeding. Not reaching
+///    for the thread-local generator sidesteps the whole class.
+fn generator(seed: Option<u64>) -> ChaCha8Rng {
+    match seed {
+        Some(s) => ChaCha8Rng::seed_from_u64(s),
+        None => ChaCha8Rng::from_os_rng(),
+    }
+}
 
 /// Result of an MCMC sampling run.
 #[derive(Debug, Clone)]
@@ -28,6 +49,12 @@ pub struct MetropolisHastings {
     pub warmup: usize,
     /// Number of sampling iterations.
     pub n_samples: usize,
+    /// Seed for the chain's generator.
+    ///
+    /// `None` draws from the OS. Set it with [`Self::with_seed`] whenever a
+    /// result needs to be reproducible — which, for anything that will be
+    /// reported, is always.
+    pub seed: Option<u64>,
 }
 
 impl MetropolisHastings {
@@ -45,7 +72,18 @@ impl MetropolisHastings {
             proposal_std,
             warmup,
             n_samples,
+            seed: None,
         }
+    }
+
+    /// Fix the seed, making this sampler's output reproducible.
+    ///
+    /// The same seed and the same log-density give a byte-identical chain, so a
+    /// surprising result can be handed to someone else and re-run.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
     }
 
     /// Run the sampler on a log-density function.
@@ -56,7 +94,7 @@ impl MetropolisHastings {
     where
         F: Fn(f64) -> f64,
     {
-        let mut rng = rand::rng();
+        let mut rng = generator(self.seed);
         let proposal = Normal::new(0.0, self.proposal_std).unwrap();
 
         let mut current = initial;
@@ -114,6 +152,12 @@ pub struct MultiDimMH {
     pub warmup: usize,
     /// Number of sampling iterations.
     pub n_samples: usize,
+    /// Seed for the chain's generator.
+    ///
+    /// `None` draws from the OS. Set it with [`Self::with_seed`] whenever a
+    /// result needs to be reproducible — which, for anything that will be
+    /// reported, is always.
+    pub seed: Option<u64>,
 }
 
 impl MultiDimMH {
@@ -132,7 +176,18 @@ impl MultiDimMH {
             proposal_stds,
             warmup,
             n_samples,
+            seed: None,
         }
+    }
+
+    /// Fix the seed, making this sampler's output reproducible.
+    ///
+    /// The same seed and the same log-density give a byte-identical chain, so a
+    /// surprising result can be handed to someone else and re-run.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
     }
 
     /// Run the sampler on a multi-dimensional log-density function.
@@ -150,7 +205,7 @@ impl MultiDimMH {
             "initial point dimensionality must match proposal_stds"
         );
 
-        let mut rng = rand::rng();
+        let mut rng = generator(self.seed);
         let proposals: Vec<Normal<f64>> = self
             .proposal_stds
             .iter()
@@ -210,6 +265,12 @@ pub struct AdaptiveMH {
     pub warmup: usize,
     /// Number of sampling iterations (proposal is fixed during sampling).
     pub n_samples: usize,
+    /// Seed for the chain's generator.
+    ///
+    /// `None` draws from the OS. Set it with [`Self::with_seed`] whenever a
+    /// result needs to be reproducible — which, for anything that will be
+    /// reported, is always.
+    pub seed: Option<u64>,
 }
 
 impl AdaptiveMH {
@@ -220,7 +281,18 @@ impl AdaptiveMH {
             initial_proposal_std: 1.0,
             warmup,
             n_samples,
+            seed: None,
         }
+    }
+
+    /// Fix the seed, making this sampler's output reproducible.
+    ///
+    /// The same seed and the same log-density give a byte-identical chain, so a
+    /// surprising result can be handed to someone else and re-run.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
     }
 
     /// Run the sampler on a 1D log-density function.
@@ -231,7 +303,7 @@ impl AdaptiveMH {
     where
         F: Fn(f64) -> f64,
     {
-        let mut rng = rand::rng();
+        let mut rng = generator(self.seed);
         let mut log_std = self.initial_proposal_std.ln();
         let mut current = initial;
         let mut current_log_p = log_density(current);

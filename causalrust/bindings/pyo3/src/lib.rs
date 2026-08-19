@@ -16,7 +16,12 @@ use pyo3::prelude::*;
 // ── Core types ────────────────────────────────────────────────────────
 
 /// Cynefin domain classification for problem complexity.
-#[pyclass(eq, eq_int, name = "CynefinDomain")]
+///
+/// `from_py_object` is opted into explicitly: pyo3 0.29 deprecates the implicit
+/// `FromPyObject` derive for `#[pyclass]` types that also implement `Clone`.
+/// This one is genuinely passed *into* Rust from Python — a caller selects a
+/// domain — so the conversion is wanted rather than incidental.
+#[pyclass(eq, eq_int, from_py_object, name = "CynefinDomain")]
 #[derive(Clone, Debug, PartialEq)]
 pub enum PyCynefinDomain {
     Clear,
@@ -59,6 +64,7 @@ impl From<cynepic_core::CynefinDomain> for PyCynefinDomain {
 
 /// A causal Directed Acyclic Graph with d-separation and adjustment tools.
 #[pyclass(name = "CausalDag")]
+#[derive(Debug)]
 pub struct PyCausalDag {
     inner: cynepic_causal::CausalDag,
 }
@@ -136,6 +142,7 @@ impl PyCausalDag {
 
 /// Beta-Binomial conjugate prior for binary outcome tracking.
 #[pyclass(name = "BetaBinomial")]
+#[derive(Debug)]
 pub struct PyBetaBinomial {
     inner: cynepic_bayes::BetaBinomial,
 }
@@ -179,6 +186,7 @@ impl PyBetaBinomial {
 
 /// A circuit breaker that opens after a configurable number of failures.
 #[pyclass(name = "CircuitBreaker")]
+#[derive(Debug)]
 pub struct PyCircuitBreaker {
     inner: cynepic_guardian::CircuitBreaker,
 }
@@ -219,6 +227,7 @@ impl PyCircuitBreaker {
 
 /// Multi-tool reliability tracking via Beta-Binomial beliefs.
 #[pyclass(name = "ToolBeliefSet")]
+#[derive(Debug)]
 pub struct PyToolBeliefSet {
     inner: cynepic_bayes::ToolBeliefSet,
 }

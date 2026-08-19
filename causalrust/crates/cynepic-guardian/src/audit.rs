@@ -31,7 +31,8 @@ impl AuditTrail {
 
     /// Get all entries (clones the entire Vec — O(n) memory).
     ///
-    /// For large audit trails, prefer [`recent_entries`] or [`iter`].
+    /// For large audit trails, prefer [`Self::recent_entries`] or
+    /// [`Self::with_entries`], neither of which clones the whole trail.
     pub fn entries(&self) -> Vec<AuditEntry> {
         self.entries
             .lock()
@@ -47,7 +48,8 @@ impl AuditTrail {
 
     /// Apply a closure to audit entries while holding the lock.
     ///
-    /// Prefer this over [`entries`] for large audit trails to avoid full clone.
+    /// Prefer this over [`Self::entries`] for large audit trails: it borrows
+    /// rather than cloning, so cost is independent of trail length.
     pub fn with_entries<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&[AuditEntry]) -> R,

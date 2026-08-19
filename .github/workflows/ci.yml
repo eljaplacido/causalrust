@@ -134,9 +134,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: causalrust
-      - uses: taiki-e/install-action@cargo-msrv
-      - name: Verify declared rust-version
-        run: cargo msrv verify --path . -- cargo check --workspace --all-features
+      # `cargo-msrv` is deliberately not used. `taiki-e/install-action` has no
+      # `cargo-msrv` tag, and the tool's value here is small: the test matrix
+      # already builds and tests the whole workspace on the declared MSRV, which
+      # is the claim that matters.
+      #
+      # What that matrix does NOT check is that the number in the manifest and
+      # the number in this workflow are the same. When they drift, the matrix
+      # keeps passing while testing a version nobody promised. That is the gap
+      # this job closes, and it needs no third-party action to do it.
+      - name: Manifest rust-version matches the CI matrix
+        run: |
+          declared=$(grep -m1 '^rust-version' Cargo.toml | sed 's/[^0-9.]//g')
+          if [ "$declared" != "$MSRV" ]; then
+            echo "::error::workspace rust-version is $declared but CI pins MSRV=$MSRV"
+            exit 1
+          fi
+          echo "rust-version $declared matches MSRV $MSRV"
+
+      # Every published crate must inherit the workspace MSRV rather than
+      # declaring its own, or a consumer on the declared minimum can still be
+      # broken by one member of the workspace.
+      - name: Every crate inherits the workspace rust-version
+        run: |
+          fail=0
+          for m in crates/*/Cargo.toml bindings/*/Cargo.toml; do
+            if ! grep -q '^rust-version.workspace = true' "$m"; then
+              echo "::error::$m does not inherit rust-version from the workspace"
+              fail=1
+            fi
+          done
+          exit $fail
 
   # ---------------------------------------------------------------------------
   # Supply chain: advisories, license compatibility, banned/duplicate crates.
@@ -256,21 +284,48 @@ jobs:
       # dependency is not on crates.io yet, so packaging a dependent crate on
       # its own fails with "no matching package found". Workspace mode resolves
       # members against each other.
-      - name: Package every crate
-        run: cargo package --workspace --no-verify
+      #
+      # `cynepic-testkit`, `cynepic-server` and the two bindings carry
+      # `publish = false` and are skipped automatically. The testkit is internal
+      # validation machinery; the others are binaries and a Python wheel, none
+      # of which a Rust consumer can depend on.
+      # Only the crates that can actually be published. `--workspace` packages
+      # every member regardless of `publish = false`, which would drag in the
+      # testkit, the two bindings and the server — none of which a Rust consumer
+      # can depend on, and none of which carry a LICENSE because they are not
+      # distributed as crates.
+      #
+      # The list is derived from `cargo metadata` rather than hardcoded, so
+      # adding a crate cannot silently escape this job.
+      - name: Package every publishable crate
+        run: |
+          set -euo pipefail
+          pkgs=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(' '.join('-p '+p['name'] for p in json.load(sys.stdin)['packages'] if p.get('publish') is None))")
+          echo "packaging: $pkgs"
+          # shellcheck disable=SC2086
+          cargo package $pkgs --no-verify
 
       # A `license-file` pointing outside the package root is silently dropped
       # from the tarball, which ships a crate with no licence text at all.
       # Assert the file is actually in each archive rather than trusting the
       # manifest.
-      - name: Every package ships its licence
+      - name: Every package ships its licence and notice
         run: |
           fail=0
-          for t in target/package/*.crate; do
-            if ! tar -tzf "$t" | grep -qE "/LICENSE$"; then
-              echo "::error::$(basename "$t") contains no LICENSE file"
-              fail=1
-            fi
+          shopt -s nullglob
+          archives=(target/package/*.crate)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::no .crate archives were produced"
+            exit 1
+          fi
+          for t in "${archives[@]}"; do
+            for f in LICENSE NOTICE; do
+              if ! tar -tzf "$t" | grep -qE "/$f\$"; then
+                echo "::error::$(basename "$t") contains no $f"
+                fail=1
+              fi
+            done
           done
           exit $fail
 

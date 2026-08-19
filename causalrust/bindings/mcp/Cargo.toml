@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+# A binary, not a library artifact. Publishing it to crates.io would offer an
+# executable nobody can depend on.
+publish = false
 description = "MCP (Model Context Protocol) JSON-RPC stdio server exposing cynepic-rs cognitive tools"
 
 [[bin]]
@@ -13,14 +17,17 @@ name = "cynepic-mcp"
 path = "src/main.rs"
 
 [dependencies]
-cynepic-core = { path = "../../crates/cynepic-core" }
-cynepic-router = { path = "../../crates/cynepic-router" }
-cynepic-causal = { path = "../../crates/cynepic-causal" }
-cynepic-bayes = { path = "../../crates/cynepic-bayes" }
-cynepic-guardian = { path = "../../crates/cynepic-guardian", default-features = false }
+cynepic-core = { path = "../../crates/cynepic-core", version = "0.2.0" }
+cynepic-router = { path = "../../crates/cynepic-router", version = "0.2.0" }
+cynepic-causal = { path = "../../crates/cynepic-causal", version = "0.2.0" }
+cynepic-bayes = { path = "../../crates/cynepic-bayes", version = "0.2.0" }
+cynepic-guardian = { path = "../../crates/cynepic-guardian", version = "0.2.0", default-features = false }
 ndarray = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
+
+[lints]
+workspace = true

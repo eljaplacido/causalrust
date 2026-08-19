@@ -64,6 +64,11 @@ unused-allowed-license = "allow"
 # Warn rather than deny: transitive duplicates are often not ours to fix.
 multiple-versions = "warn"
 wildcards = "deny"
+# `cynepic-testkit` is `publish = false` and used only as a dev-dependency, so
+# it deliberately carries no `version` — adding one would imply it is
+# publishable. This allows a path dependency to omit a version ONLY when the
+# crate it points at is unpublished, which is exactly that case and no wider.
+allow-wildcard-paths = true
 # Prefer the highest version when a duplicate is unavoidable.
 highlight = "all"
 
