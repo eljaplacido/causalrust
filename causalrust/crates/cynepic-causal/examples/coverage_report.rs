@@ -31,7 +31,10 @@ fn main() {
     let harness = ValidationHarness::default().with_replications(300);
 
     println!("cynepic-causal — confidence-interval coverage");
-    println!("{} replications per cell, nominal 95%\n", harness.replications);
+    println!(
+        "{} replications per cell, nominal 95%\n",
+        harness.replications
+    );
 
     for (label, estimator_name) in [("ols_adjusted", "ols"), ("ipw", "ipw")] {
         println!("── {label} {}", "─".repeat(64 - label.len()));
@@ -42,25 +45,30 @@ fn main() {
                 continue;
             }
 
-            let report = harness.run(cell, dgp, |t| Some(t.ate), |data| {
-                let r = match estimator_name {
-                    "ols" => LinearATEEstimator::ols_adjusted(
-                        &data.treatment,
-                        &data.outcome,
-                        &data.covariates,
-                    ),
-                    _ => PropensityScoreEstimator::ipw(
-                        &data.treatment,
-                        &data.outcome,
-                        &data.covariates,
-                    ),
-                };
-                Some((
-                    r.ate,
-                    r.ate - 1.96 * r.std_error,
-                    r.ate + 1.96 * r.std_error,
-                ))
-            });
+            let report = harness.run(
+                cell,
+                dgp,
+                |t| Some(t.ate),
+                |data| {
+                    let r = match estimator_name {
+                        "ols" => LinearATEEstimator::ols_adjusted(
+                            &data.treatment,
+                            &data.outcome,
+                            &data.covariates,
+                        ),
+                        _ => PropensityScoreEstimator::ipw(
+                            &data.treatment,
+                            &data.outcome,
+                            &data.covariates,
+                        ),
+                    };
+                    Some((
+                        r.ate,
+                        r.ate - 1.96 * r.std_error,
+                        r.ate + 1.96 * r.std_error,
+                    ))
+                },
+            );
 
             let flag = if report.coverage.is_nan() {
                 " ??"

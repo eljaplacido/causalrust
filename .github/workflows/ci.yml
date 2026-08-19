@@ -6,63 +6,335 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same ref — a PR that gets three pushes in a
+# minute should not burn three full matrices.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: 1
+  # MSRV, mirrored from workspace.package.rust-version. Keep in sync.
+  MSRV: "1.85"
+
+defaults:
+  run:
+    working-directory: causalrust
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------
+  # Correctness: does it build and pass on every platform we claim to support?
+  # ---------------------------------------------------------------------------
+  test:
+    name: test / ${{ matrix.os }} / ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, "1.85"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust ${{ matrix.rust }}
-        uses: dtolnay/rust-action/setup@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            causalrust/target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('causalrust/Cargo.lock') }}
+          workspaces: causalrust
 
-      - name: Build workspace
-        working-directory: causalrust
-        run: cargo build --workspace
+      - name: Build
+        run: cargo build --workspace --all-features
 
-      - name: Test all crates
-        working-directory: causalrust
+      - name: Test (all features)
+        run: cargo test --workspace --all-features
+
+      - name: Test (default features)
         run: cargo test --workspace
 
-      - name: Test guardian without rego
-        working-directory: causalrust
-        run: cargo test -p cynepic-guardian --no-default-features
+      - name: Test (no default features)
+        run: cargo test --workspace --no-default-features
 
+      - name: Doctests
+        run: cargo test --workspace --all-features --doc
+
+  # ---------------------------------------------------------------------------
+  # Style and lint policy. See [workspace.lints] in Cargo.toml — the `allow`
+  # entries there are tracked debt, not settled policy.
+  # ---------------------------------------------------------------------------
   lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-action/setup@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy, rustfmt
 
-      - name: Check formatting
-        working-directory: causalrust
-        run: cargo fmt --check
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
 
-      - name: Clippy
-        working-directory: causalrust
-        run: cargo clippy --workspace -- -D warnings
+      - name: Formatting
+        run: cargo fmt --all --check
 
-      - name: Check docs build
-        working-directory: causalrust
-        run: cargo doc --workspace --no-deps
+      - name: Clippy (all targets, all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+      - name: Docs build clean
+        env:
+          RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links"
+        run: cargo doc --workspace --all-features --no-deps
+
+  # ---------------------------------------------------------------------------
+  # Every feature combination must compile. Today only guardian is feature-gated,
+  # but this is the gate that keeps `--no-default-features` from silently rotting
+  # as PyO3/WASM/polars features land.
+  # ---------------------------------------------------------------------------
+  features:
+    name: feature powerset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: taiki-e/install-action@cargo-hack
+      - name: Check every feature combination
+        run: cargo hack check --workspace --feature-powerset --no-dev-deps
+
+  # ---------------------------------------------------------------------------
+  # The advertised MSRV must actually build. The test matrix pins 1.85 too, but
+  # cargo-msrv verifies the manifest's own claim rather than a hardcoded string.
+  # ---------------------------------------------------------------------------
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: taiki-e/install-action@cargo-msrv
+      - name: Verify declared rust-version
+        run: cargo msrv verify --path . -- cargo check --workspace --all-features
+
+  # ---------------------------------------------------------------------------
+  # Supply chain: advisories, license compatibility, banned/duplicate crates.
+  # This is also what validates that our own `license` field is a parseable SPDX
+  # expression — a malformed one is rejected by crates.io at publish time.
+  # ---------------------------------------------------------------------------
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: causalrust/Cargo.toml
+          command: check all
+
+  # ---------------------------------------------------------------------------
+  # Coverage. Reported, not yet gated — the floor gets set once Tier 1 lands and
+  # the number stops moving. Ratchet, never lower.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Per-crate summary
+        run: cargo llvm-cov report --summary-only
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: causalrust/lcov.info
+
+  # ---------------------------------------------------------------------------
+  # Undefined behaviour. The crates forbid unsafe, so this is mainly a check on
+  # dependencies and on arithmetic in the numeric kernels. Scoped to the two
+  # crates with no async runtime — Miri cannot run tokio's multi-thread reactor.
+  # ---------------------------------------------------------------------------
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - name: Miri (numeric crates)
+        # Isolation is disabled because the belief-tracker timestamps
+        # observations with `chrono::Utc::now()`, and Miri's sandbox blocks
+        # `clock_gettime`. This weakens nothing about the UB checking itself.
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: cargo miri test -p cynepic-causal -p cynepic-bayes
+
+  # ---------------------------------------------------------------------------
+  # WASM reach, guarded from day one so the roadmap's WASM target does not become
+  # a rewrite later.
+  #
+  # Verified working today: wasm32-wasip1 for the three runtime-free crates.
+  #
+  # NOT yet gated, with reasons — each is real work, not an oversight:
+  #   * wasm32-unknown-unknown (browser) fails for every crate:
+  #       - cynepic-core  -> uuid v1 (v4) -> getrandom 0.4, which needs the
+  #         `wasm_js` backend plus a RUSTFLAGS cfg on that target.
+  #       - cynepic-bayes -> statrs -> nalgebra -> rand 0.8 -> getrandom 0.2,
+  #         which needs its `js` feature.
+  #     Fixing both is the Tier 4 browser-WASM task; add the target here then.
+  #   * cynepic-guardian / -graph / -router pull tokio with `features = ["full"]`,
+  #     which does not build for any wasm target. Slimming those feature sets is
+  #     a prerequisite for ever shipping them to wasm.
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: wasm32-wasip1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - name: Check runtime-free crates on wasm32-wasip1
+        run: |
+          cargo check --target wasm32-wasip1 \
+            -p cynepic-core -p cynepic-causal -p cynepic-bayes
+
+  # ---------------------------------------------------------------------------
+  # Packaging: every crate must be publishable in dependency order. Catches the
+  # class of error that only appears at `cargo publish` time — bad license
+  # expressions, files outside the package root, missing metadata.
+  # ---------------------------------------------------------------------------
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      # Must be `--workspace`, not per-crate: the internal `cynepic-core`
+      # dependency is not on crates.io yet, so packaging a dependent crate on
+      # its own fails with "no matching package found". Workspace mode resolves
+      # members against each other.
+      - name: Package every crate
+        run: cargo package --workspace --no-verify
+
+      # A `license-file` pointing outside the package root is silently dropped
+      # from the tarball, which ships a crate with no licence text at all.
+      # Assert the file is actually in each archive rather than trusting the
+      # manifest.
+      - name: Every package ships its licence
+        run: |
+          fail=0
+          for t in target/package/*.crate; do
+            if ! tar -tzf "$t" | grep -qE "/LICENSE$"; then
+              echo "::error::$(basename "$t") contains no LICENSE file"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  # NOTE: `cargo-semver-checks` is deliberately absent. It compares against a
+  # baseline published on crates.io, and these crates are not published yet — a
+  # job that cannot run is worse than no job. Add it to the release workflow
+  # immediately after the first publish.
+
+  # ---------------------------------------------------------------------------
+  # Correctness debt. The specs in crates/cynepic-causal/tests/findings.rs are
+  # SUPPOSED to fail — each one is an open finding from docs/FINDINGS.md. They
+  # cannot run as ordinary tests without making CI permanently red, and a
+  # permanently red CI is one nobody reads.
+  #
+  # So the ratchet counts them instead, and enforces two things the count alone
+  # would miss: the specs still compile against the current API, and every one
+  # of them still fails. A spec that starts passing is either a fix nobody
+  # claimed or a spec that never witnessed anything, and both must surface.
+  # ---------------------------------------------------------------------------
+  findings:
+    name: findings ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+
+      - name: Findings ratchet
+        run: ./scripts/findings-ratchet.sh
+
+      - name: Estimator coverage table
+        run: cargo run -p cynepic-causal --example coverage_report --release
+          | tee coverage-table.txt
+
+      # Published as an artifact on every run. Coverage is the one number here
+      # that can come back bad, which is exactly why it is worth publishing —
+      # a benchmark you would not publish when it made you look slow is not
+      # evidence of anything.
+      - name: Upload coverage table
+        uses: actions/upload-artifact@v4
+        with:
+          name: estimator-coverage
+          path: causalrust/coverage-table.txt
+
+  # ---------------------------------------------------------------------------
+  # Single required status check. Branch protection points at this one job, so
+  # adding a job above does not mean editing branch protection settings.
+  # ---------------------------------------------------------------------------
+  ci-ok:
+    name: CI
+    if: always()
+    needs:
+      - test
+      - lint
+      - features
+      - msrv
+      - supply-chain
+      - coverage
+      - miri
+      - wasm
+      - package
+      - findings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "One or more CI jobs failed."
+          exit 1
+      - name: All green
+        run: echo "All CI jobs passed."

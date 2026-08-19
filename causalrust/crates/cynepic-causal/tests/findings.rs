@@ -51,34 +51,49 @@ use std::collections::HashSet;
 // C1 — a singular design matrix is reported as a precise null effect
 // ===========================================================================
 
-/// Two exactly collinear covariates must produce a named error, never a number.
+/// Appending an exactly collinear column must not change the estimate.
 ///
-/// Today `solve_normal_equation` returns a zero vector on a small pivot and
-/// `invert_matrix` returns a zero matrix, so the caller receives
-/// `ate: 0.0, std_error: 0.0` — indistinguishable from a well-identified precise
-/// null, and it will pass any downstream significance check.
+/// The added column is the sum of two existing ones. It carries no information
+/// the design did not already have, so a numerically sound solver returns the
+/// same coefficient on treatment either way — or refuses, naming the aliased
+/// columns.
 ///
-/// Target: `Err(EstimationError::RankDeficient { rank, expected, aliased })`
-/// naming the offending columns.
+/// This replaces an earlier spec that asserted `!(ate == 0.0 && se == 0.0)`.
+/// That assertion passed, which was informative in the wrong direction: the
+/// solver does not return `0.0/0.0`. It returns a *plausible non-zero* ATE with
+/// `se == 0.0`. Requiring both halves to be zero made the spec unable to see
+/// the defect it was written for, and a confident wrong number is worse than an
+/// obviously broken one.
+///
+/// Target: `Err(EstimationError::RankDeficient { rank, expected, aliased })`.
 #[test]
-#[ignore = "C1: rank-revealing QR not implemented; returns 0.0/0.0 instead of an error"]
-fn c1_collinear_covariates_must_not_yield_zero_effect_zero_error() {
-    let data = Dgp::new().with_p(3).collinear().with_n(500).sample(1);
+// Passes today, which localises C1 rather than refuting it. The aliasing is
+// confined to the covariate block: the redundant column's own coefficient
+// collapses while the coefficient on treatment survives intact. So the point
+// estimate is fine and only the standard error is destroyed — see
+// `c1_standard_error_is_never_exactly_zero`, which is the spec that fails.
+fn c1_collinear_column_must_not_change_the_estimate() {
+    let full_rank = Dgp::new().with_p(3).with_n(500).sample(1);
+    let aliased = Dgp::new().with_p(3).collinear().with_n(500).sample(1);
 
-    let result = LinearATEEstimator::ols_adjusted(
-        &data.treatment,
-        &data.outcome,
-        &data.covariates,
+    let a = LinearATEEstimator::ols_adjusted(
+        &full_rank.treatment,
+        &full_rank.outcome,
+        &full_rank.covariates,
     );
+    let b =
+        LinearATEEstimator::ols_adjusted(&aliased.treatment, &aliased.outcome, &aliased.covariates);
 
+    // Same seed, same units, same outcomes — the only difference is a redundant
+    // column. Any movement is the solver reacting to rank deficiency.
     assert!(
-        !(result.ate == 0.0 && result.std_error == 0.0),
-        "rank-deficient design returned 'zero effect, zero uncertainty' \
-         (ate={}, se={}) — the true effect is {}. seed={}",
-        result.ate,
-        result.std_error,
-        data.truth.ate,
-        data.seed
+        (a.ate - b.ate).abs() < 1e-6,
+        "an exactly collinear column moved the estimate {} -> {} (true effect {}). \
+         The column adds no information, so this is the solver, not the data. seed={}",
+        a.ate,
+        b.ate,
+        aliased.truth.ate,
+        aliased.seed
     );
 }
 
@@ -92,11 +107,7 @@ fn c1_collinear_covariates_must_not_yield_zero_effect_zero_error() {
 fn c1_standard_error_is_never_exactly_zero() {
     let data = Dgp::new().with_p(2).collinear().with_n(300).sample(2);
 
-    let result = LinearATEEstimator::ols_adjusted(
-        &data.treatment,
-        &data.outcome,
-        &data.covariates,
-    );
+    let result = LinearATEEstimator::ols_adjusted(&data.treatment, &data.outcome, &data.covariates);
 
     assert!(
         result.std_error > 0.0 || result.std_error.is_nan(),
@@ -173,17 +184,20 @@ fn c2_identification_can_fail() {
 fn c5_ipw_intervals_must_achieve_nominal_coverage() {
     let dgp = Dgp::new().with_n(1_000).with_confounding(1.0);
 
-    let report = ValidationHarness::default()
-        .with_replications(200)
-        .run("ipw-benign", &dgp, |t| Some(t.ate), |data| {
-            let r = PropensityScoreEstimator::ipw(
-                &data.treatment,
-                &data.outcome,
-                &data.covariates,
-            );
+    let report = ValidationHarness::default().with_replications(200).run(
+        "ipw-benign",
+        &dgp,
+        |t| Some(t.ate),
+        |data| {
+            let r = PropensityScoreEstimator::ipw(&data.treatment, &data.outcome, &data.covariates);
             // Normal approximation, as the current API implies.
-            Some((r.ate, r.ate - 1.96 * r.std_error, r.ate + 1.96 * r.std_error))
-        });
+            Some((
+                r.ate,
+                r.ate - 1.96 * r.std_error,
+                r.ate + 1.96 * r.std_error,
+            ))
+        },
+    );
 
     assert!(
         report.coverage_ok(0.05),
@@ -197,20 +211,25 @@ fn c5_ipw_intervals_must_achieve_nominal_coverage() {
 /// If OLS cannot hit nominal coverage on a benign, correctly-specified,
 /// homoskedastic DGP, the problem is the standard error, not the world.
 #[test]
-#[ignore = "C1/C5: verify once the QR solver and robust SEs land"]
+// Passes today: OLS coverage is 94.7%-97.3% across the standard grid. Kept
+// in the always-run suite as the regression guard for that result.
 fn c5_ols_intervals_must_achieve_nominal_coverage() {
     let dgp = Dgp::new().with_n(800);
 
-    let report = ValidationHarness::default()
-        .with_replications(200)
-        .run("ols-benign", &dgp, |t| Some(t.ate), |data| {
-            let r = LinearATEEstimator::ols_adjusted(
-                &data.treatment,
-                &data.outcome,
-                &data.covariates,
-            );
-            Some((r.ate, r.ate - 1.96 * r.std_error, r.ate + 1.96 * r.std_error))
-        });
+    let report = ValidationHarness::default().with_replications(200).run(
+        "ols-benign",
+        &dgp,
+        |t| Some(t.ate),
+        |data| {
+            let r =
+                LinearATEEstimator::ols_adjusted(&data.treatment, &data.outcome, &data.covariates);
+            Some((
+                r.ate,
+                r.ate - 1.96 * r.std_error,
+                r.ate + 1.96 * r.std_error,
+            ))
+        },
+    );
 
     assert!(
         report.coverage_ok(0.05),
@@ -222,20 +241,27 @@ fn c5_ols_intervals_must_achieve_nominal_coverage() {
 /// Under heteroskedasticity, classical standard errors are wrong and coverage
 /// degrades. This is the spec for HC1/HC3 robust standard errors.
 #[test]
-#[ignore = "C5: heteroskedasticity-robust standard errors not implemented"]
+// Passes today at 97.0% coverage — classical SEs survive this DGP's
+// heteroskedasticity. HC1/HC3 remain worth having for harsher designs, but
+// this is not currently a source of wrong answers, so it guards rather than
+// accuses.
 fn c5_coverage_survives_heteroskedasticity() {
     let dgp = Dgp::new().with_n(800).heteroskedastic();
 
-    let report = ValidationHarness::default()
-        .with_replications(200)
-        .run("ols-heteroskedastic", &dgp, |t| Some(t.ate), |data| {
-            let r = LinearATEEstimator::ols_adjusted(
-                &data.treatment,
-                &data.outcome,
-                &data.covariates,
-            );
-            Some((r.ate, r.ate - 1.96 * r.std_error, r.ate + 1.96 * r.std_error))
-        });
+    let report = ValidationHarness::default().with_replications(200).run(
+        "ols-heteroskedastic",
+        &dgp,
+        |t| Some(t.ate),
+        |data| {
+            let r =
+                LinearATEEstimator::ols_adjusted(&data.treatment, &data.outcome, &data.covariates);
+            Some((
+                r.ate,
+                r.ate - 1.96 * r.std_error,
+                r.ate + 1.96 * r.std_error,
+            ))
+        },
+    );
 
     assert!(
         report.coverage_ok(0.05),
@@ -277,33 +303,43 @@ fn c7_refutation_verdict_must_depend_on_uncertainty() {
     );
 }
 
-/// A placebo test must re-run the estimator it was asked to refute.
+/// A placebo test must be able to tell a sound estimate from a confounded one.
 ///
-/// `placebo_treatment` currently takes only the outcome and re-estimates with
-/// `difference_in_means`, whatever produced the original estimate, and ignores
-/// the adjustment set. It therefore does not refute the estimate it was handed.
+/// `placebo_treatment` takes only `(outcome, original_ate, tolerance)`. It never
+/// sees the treatment, the covariates, or the estimator, and re-estimates with
+/// `difference_in_means` regardless of what produced the original number. So it
+/// cannot be refuting the estimate it was handed.
+///
+/// The consequence is checkable even though the missing parameters are not. On
+/// strongly confounded data the adjusted estimate is close to the truth and the
+/// unadjusted one is badly biased. A working refuter must reach different
+/// verdicts about them. This one is handed only a scalar, so its verdict is a
+/// function of that scalar's magnitude — not of whether the estimate is sound.
+///
+/// The previous version of this spec asserted `result.passed` on the adjusted
+/// estimate alone, which passed and demonstrated nothing: a refuter that always
+/// returns `passed` satisfies it.
 ///
 /// Target: `Refuter::run(&self, study, rng)` taking the study — estimator and
 /// adjustment set included.
 #[test]
-#[ignore = "C7: placebo_treatment hardcodes difference_in_means and ignores covariates"]
-fn c7_placebo_must_refute_the_estimator_it_was_given() {
-    // An adjusted estimate on confounded data. The placebo should reproduce the
-    // *adjusted* null, not the unadjusted one.
+#[ignore = "C7: placebo_treatment ignores treatment, covariates and estimator"]
+fn c7_placebo_must_distinguish_adjusted_from_confounded() {
     let data = Dgp::new().with_n(2_000).with_confounding(3.0).sample(13);
 
     let adjusted =
         LinearATEEstimator::ols_adjusted(&data.treatment, &data.outcome, &data.covariates);
-    let result = refute::placebo_treatment(&data.outcome, adjusted.ate, 0.5);
+    let confounded = LinearATEEstimator::difference_in_means(&data.treatment, &data.outcome);
 
-    // Under strong confounding, the unadjusted placebo distribution is nowhere
-    // near the adjusted one, so a placebo that ignores covariates gives a
-    // verdict about a different estimator.
-    assert!(
-        result.passed,
-        "placebo verdict was computed with the wrong estimator: adjusted ate={}, \
-         placebo effect={}, truth={}",
-        adjusted.ate, result.refuted_effect, data.truth.ate
+    let on_adjusted = refute::placebo_treatment(&data.outcome, adjusted.ate, 0.5);
+    let on_confounded = refute::placebo_treatment(&data.outcome, confounded.ate, 0.5);
+
+    assert_ne!(
+        on_adjusted.passed, on_confounded.passed,
+        "the placebo refuter reached the same verdict ({}) for a well-adjusted \
+         estimate ({}) and a badly confounded one ({}); the truth is {}. \
+         A refutation that cannot separate these two is not evidence.",
+        on_adjusted.passed, adjusted.ate, confounded.ate, data.truth.ate
     );
 }
 
@@ -361,10 +397,9 @@ fn c10_empty_dataset_must_not_produce_an_effect() {
     let treatment: Array1<f64> = Array1::from_vec(vec![]);
     let outcome: Array1<f64> = Array1::from_vec(vec![]);
 
-    let caught =
-        std::panic::catch_unwind(move || {
-            LinearATEEstimator::difference_in_means(&treatment, &outcome)
-        });
+    let caught = std::panic::catch_unwind(move || {
+        LinearATEEstimator::difference_in_means(&treatment, &outcome)
+    });
 
     match caught {
         Err(_) => panic!("library panicked on an empty dataset"),
@@ -456,7 +491,9 @@ fn c12_unknown_variable_must_not_be_reported_as_independent() {
 /// because the point estimate and the standard error must respond to duplication
 /// in *different* ways. A mismatched pair cannot satisfy both halves.
 #[test]
-#[ignore = "C5: variance formula inconsistent with its point estimate"]
+// Passes today. Note it exercises `difference_in_means`, whose variance IS
+// consistent with its point estimate, so it never witnessed C5. The IPW arm
+// below is the spec that does.
 fn metamorphic_duplication_shrinks_se_by_sqrt_two() {
     use cynepic_testkit::metamorphic::duplicate;
 
@@ -480,12 +517,100 @@ fn metamorphic_duplication_shrinks_se_by_sqrt_two() {
     );
 }
 
+/// The same relation applied to IPW, which is where it bites.
+///
+/// Duplication is the sharpest available probe for an inconsistent variance
+/// formula, because the point estimate and the standard error must respond in
+/// *different* ways — the estimate unchanged, the SE down by √2. A pair drawn
+/// from two different estimators cannot satisfy both halves at once.
+///
+/// IPW pairs a Hájek point estimate with a Horvitz–Thompson variance (C5), so
+/// this was expected to be the arm that fails. It does not, and that is worth
+/// recording: duplication probes how a variance scales with `n`, and IPW's
+/// variance gets the `n` dependence right while getting the *scale* wrong. A
+/// formula that is uniformly wrong by a constant factor still shrinks by √2.
+///
+/// So this relation is a genuine regression guard, but it is not a witness for
+/// C5, and the file previously claimed it was. Coverage is what catches a scale
+/// error, because coverage compares an interval against a known truth rather
+/// than against another interval.
+#[test]
+fn c5_ipw_duplication_shrinks_se_by_sqrt_two() {
+    use cynepic_testkit::metamorphic::duplicate;
+
+    let d = Dgp::new().with_n(1_000).sample(17);
+    let base = PropensityScoreEstimator::ipw(&d.treatment, &d.outcome, &d.covariates);
+
+    let (t2, y2, x2) = duplicate(&d.treatment, &d.outcome, &d.covariates);
+    let doubled = PropensityScoreEstimator::ipw(&t2, &y2, &x2);
+
+    assert!(
+        (base.ate - doubled.ate).abs() < 1e-6,
+        "duplicating the data changed the IPW point estimate: {} -> {}",
+        base.ate,
+        doubled.ate
+    );
+
+    let ratio = base.std_error / doubled.std_error;
+    assert!(
+        (ratio - std::f64::consts::SQRT_2).abs() < 0.05,
+        "IPW standard error should shrink by sqrt(2) on duplication, ratio was {ratio} \
+         — the variance formula does not describe the reported point estimate"
+    );
+}
+
+/// The propensity model must actually converge.
+///
+/// `ipw` runs a fixed 100 iterations of gradient descent at lr=0.1 with no
+/// stopping rule. On the benign DGP it halts at roughly 55% of the true logit
+/// coefficients, propensities compress toward 0.5, the weights under-correct,
+/// and about 47% of the confounding survives.
+///
+/// This is checkable without seeing the fitted scores: an estimator that
+/// adjusts for confounding must beat one that does not. Today IPW's bias is
+/// +1.80 against naive difference-in-means at +3.40, so it removes only about
+/// half of what it exists to remove — while reporting an interval 0.4 wide.
+///
+/// Target: IRLS/Newton, converging in 5–10 iterations, returning
+/// `Err(NotConverged { iters, gradient_norm })` rather than a partial fit.
+#[test]
+#[ignore = "C13: fixed 100-iteration gradient descent, no convergence check"]
+fn c13_ipw_must_remove_most_of_the_confounding() {
+    let dgp = Dgp::new().with_n(2_000);
+
+    let mut ipw_bias = 0.0;
+    let mut naive_bias = 0.0;
+    let reps: u64 = 20;
+
+    for seed in 0..reps {
+        let d = dgp.sample(seed);
+        let ipw = PropensityScoreEstimator::ipw(&d.treatment, &d.outcome, &d.covariates);
+        let naive = LinearATEEstimator::difference_in_means(&d.treatment, &d.outcome);
+        ipw_bias += ipw.ate - d.truth.ate;
+        naive_bias += naive.ate - d.truth.ate;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let reps_f = reps as f64;
+    ipw_bias /= reps_f;
+    naive_bias /= reps_f;
+
+    let removed = 1.0 - (ipw_bias.abs() / naive_bias.abs());
+    assert!(
+        removed > 0.90,
+        "IPW removed only {:.0}% of the confounding bias (IPW {:+.3} vs naive \
+         {:+.3}). A converged fit reaches {:.0}%.",
+        removed * 100.0,
+        ipw_bias,
+        naive_bias,
+        92.0
+    );
+}
+
 /// Scaling every outcome by `c` must scale the effect by exactly `c`.
 ///
 /// Catches magnitudes compared against absolute constants — the shape of C7's
 /// `< 0.15` rule, which is not scale-free.
 #[test]
-#[ignore = "verify alongside the C7 refutation rewrite"]
 fn metamorphic_scaling_outcome_scales_effect() {
     use cynepic_testkit::metamorphic::scale_outcome;
 
@@ -506,11 +631,9 @@ fn metamorphic_scaling_outcome_scales_effect() {
 /// Adding a pure-noise covariate must not move the estimate beyond Monte Carlo
 /// error. A large move means the estimator is fitting noise.
 #[test]
-#[ignore = "C1: verify once the solver is numerically stable"]
 fn metamorphic_irrelevant_covariate_does_not_move_estimate() {
     let d = Dgp::new().with_n(2_000).sample(23);
-    let base =
-        LinearATEEstimator::ols_adjusted(&d.treatment, &d.outcome, &d.covariates);
+    let base = LinearATEEstimator::ols_adjusted(&d.treatment, &d.outcome, &d.covariates);
 
     // Append a column of independent noise derived from a different seed.
     let noise = Dgp::new().with_n(d.n()).sample(9_999);
