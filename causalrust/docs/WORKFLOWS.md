@@ -39,7 +39,7 @@ Most software teams already make decisions that are causal, probabilistic, and p
 
 Instead of "revenue went up, ship it," the team gets: "The causal effect of this feature on revenue is +2.1% (±0.8%), controlling for seasonality, and the estimate survives placebo and subset refutation tests."
 
-**Where it runs:** CI pipeline as a post-experiment analysis step. Data comes from the warehouse (Parquet via Polars), DAG comes from a config file checked into the repo, result is posted as a PR comment or Slack message.
+**Where it runs:** CI pipeline as a post-experiment analysis step. Data comes from the warehouse and is handed to the estimators as `ndarray` arrays (Parquet/Polars ingestion is planned, not present), DAG comes from a config file checked into the repo, result is posted as a PR comment or Slack message.
 
 **Integration surface:** Python (PyO3) for data science notebooks, HTTP API for dashboard backends, MCP tool for an agent that answers "should we ship this feature?"
 
@@ -184,7 +184,7 @@ cynepic-Enhanced Agent:
   Observe → Classify (router) → Reason (causal/bayes) → Validate (guardian) → Act → Audit → ...
 ```
 
-The difference: between "Think" and "Act," three structured reasoning steps replace the LLM's ungrounded intuition with formal methods. The LLM still orchestrates — but the heavy analytical lifting happens in Rust at microsecond latency.
+The difference: between "Think" and "Act," three structured reasoning steps replace the LLM's ungrounded intuition with formal methods. The LLM still orchestrates — but the heavy analytical lifting happens in Rust, with every estimate carrying its estimand, interval and fit diagnostics.
 
 ---
 

@@ -94,7 +94,7 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | **Classify problem complexity** before choosing an approach | `cynepic-router` | Keyword classifier + entropy scoring → Cynefin domain | Domain + confidence + "which engine should handle this?" |
 | **Orchestrate multi-step AI workflows** with safety guarantees | `cynepic-graph` | StateGraph<S> → nodes → conditional edges → execute | Compile-time type safety, per-node timeout, checkpoint/resume |
 | **Monitor for distribution drift** in your AI system over time | `cynepic-router` | DriftDetector → KL-divergence → baseline comparison | Alert when routing patterns shift significantly |
-| **Call from Python** to accelerate DoWhy/PyMC/numpy workflows | `cynepic-pyo3` | `pip install cynepic` → `import cynepic` | 100-1000x speedup on DAG ops, conjugate priors, policy eval |
+| **Call from Python** to accelerate DoWhy/PyMC/numpy workflows | `cynepic-pyo3` | `pip install cynepic` → `import cynepic` | Exact Beta/Gamma quantiles, verified estimators; speedup unmeasured |
 | **Give AI agents decision intelligence** via MCP | `cynepic-mcp` | JSON-RPC stdio → 8 cognitive tools | Agents can classify, estimate ATE, check policy, update beliefs |
 | **Run a lightweight decision API** without Python dependencies | `cynepic-server` | Axum binary → 6 REST endpoints | Single ~8MB binary, no venv, no pip |
 | **Audit AI decisions** for compliance (EU AI Act, SOC2) | `cynepic-guardian` | AuditTrail → `recent_entries()` or `with_entries()` | Immutable append-only log, no-clone access for large trails |

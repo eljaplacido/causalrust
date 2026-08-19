@@ -10,7 +10,7 @@ Most agent frameworks focus on LLM orchestration. cynepic-rs provides the **miss
 
 - **Causal correctness** — don't just correlate, identify *why* things happen
 - **Calibrated uncertainty** — Bayesian beliefs instead of ad-hoc confidence scores
-- **Formal governance** — Rego/Cedar policies with append-only audit trails
+- **Formal governance** — Rego policies with append-only audit trails
 - **Type-safe orchestration** — `StateGraph<S>` with compile-time guarantees
 - **Rust-native** — no GC pauses, no Python runtime, embeddable in any service
 

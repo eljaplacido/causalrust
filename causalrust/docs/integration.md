@@ -49,7 +49,7 @@ adjustment = BackdoorCriterion.find(dag, treatment="X", outcome="Y")
 | **CrewAI / AutoGen** | cynepic-router | CynefinRouter as a tool callable by CrewAI agents for query classification. |
 | **MLflow / W&B** | cynepic-bayes | Log posterior summaries, treatment effects, and audit trails as MLflow metrics/artifacts. |
 | **Prefect / Airflow** | cynepic-graph | cynepic-graph workflows as Prefect tasks. Each node becomes a task in the DAG. |
-| **OPA (Python client)** | cynepic-guardian | Drop-in replacement: `RegoPolicyEvaluator` evaluates the same Rego policies, 8x faster than OPA sidecar. |
+| **OPA (Python client)** | cynepic-guardian | Drop-in replacement: `RegoPolicyEvaluator` evaluates the same Rego policies, in-process rather than over a sidecar hop (speedup unmeasured). |
 | **HumanLayer** | cynepic-guardian | Future HITL integration: guardian escalation triggers HumanLayer approval, webhook resumes workflow. |
 | **dbt** | cynepic-causal | Causal DAGs validated against dbt model lineage. Ensure data pipeline matches causal assumptions. |
 
@@ -117,7 +117,7 @@ For Java/Kotlin/Scala integration, cynepic crates expose a C ABI via `#[no_mangl
 
 | JVM Library | cynepic Crate | Integration Path |
 |------------|---------------|-----------------|
-| **Apache Spark** | cynepic-causal | UDF wrapping cynepic ATE estimator. Process partitions in Rust for 10-50x speedup. |
+| **Apache Spark** | cynepic-causal | UDF wrapping the cynepic ATE estimator, so partitions are processed in Rust. Speedup unmeasured. |
 | **Apache Flink** | cynepic-graph | cynepic-graph as a Flink ProcessFunction for stateful event processing. |
 | **Kafka Streams** | cynepic-router | Classification as a Kafka Streams transformer. |
 | **Spring Boot** | cynepic-server | HTTP API consumed as a Spring WebClient service. |

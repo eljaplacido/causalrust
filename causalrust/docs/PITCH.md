@@ -92,7 +92,7 @@ cynepic-guardian's append-only audit trail, policy chain evaluation, and circuit
 ### 3. Adaptive Clinical Trial Monitoring
 **Who:** Pharma, biotech, CROs
 **Problem:** Traditional trials use fixed sample sizes. Bayesian adaptive designs can stop early (saving time and lives) but require real-time posterior computation.
-**cynepic solution:** `cynepic-bayes` computes Beta-Binomial posterior updates in microseconds. Conjugate priors cover the vast majority of clinical endpoints (binary outcomes, continuous measures, count data). `cynepic-guardian` enforces regulatory policies (e.g., "cannot stop trial before minimum enrollment").
+**cynepic solution:** `cynepic-bayes` computes Beta-Binomial posterior updates in closed form, with *exact* Beta quantile intervals rather than a normal approximation. Conjugate priors cover the vast majority of clinical endpoints (binary outcomes, continuous measures, count data). `cynepic-guardian` enforces regulatory policies (e.g., "cannot stop trial before minimum enrollment").
 
 ### 4. LLM Cost Optimization
 **Who:** Any company spending >$10K/month on LLM APIs
@@ -107,7 +107,7 @@ cynepic-guardian's append-only audit trail, policy chain evaluation, and circuit
 ### 6. Real-Time Fraud / Anomaly Detection
 **Who:** FinTech, payments, cybersecurity
 **Problem:** Traditional rule engines are brittle. ML models produce scores without uncertainty bounds. False positives are expensive.
-**cynepic solution:** `cynepic-bayes` maintains a belief state per entity that updates in real-time as new transactions arrive. `cynepic-guardian` enforces risk thresholds with circuit breakers (auto-block if anomaly rate spikes). The entire pipeline runs in microseconds — suitable for payment authorization paths.
+**cynepic solution:** `cynepic-bayes` maintains a belief state per entity that updates in real-time as new transactions arrive. `cynepic-guardian` enforces risk thresholds with circuit breakers (auto-block if anomaly rate spikes). The pipeline is allocation-light and synchronous, though its latency is not yet measured — see the performance warning in [../README.md](../README.md#performance--unverified).
 
 ---
 
@@ -126,7 +126,7 @@ The pragmatic path: PyO3 bindings let Python teams use cynepic as a drop-in acce
 
 ### vs. Rust ML Ecosystem (Polars, Candle, Burn)
 
-cynepic-rs **complements** these libraries — it uses Polars for data, will use Candle for embeddings, and Burn for autodiff. The gap cynepic fills is the *decision layer* above raw ML: causal identification, Bayesian reasoning, policy enforcement, workflow orchestration. Nobody else in the Rust ecosystem is building this.
+cynepic-rs **complements** these libraries. It does not depend on them today — Polars, Candle and Burn are all planned rather than present (see [roadmap.md](roadmap.md)). The gap cynepic fills is the *decision layer* above raw ML: causal identification, Bayesian reasoning, policy enforcement, workflow orchestration. Nobody else in the Rust ecosystem is building this.
 
 ### vs. Cloud AI Platforms (Vertex AI, SageMaker, Azure ML)
 
@@ -159,7 +159,7 @@ Configure cynepic-mcp as an MCP tool server. Your Claude/GPT/local agent gets fi
 Deploy cynepic-server as a sidecar container. REST API with OpenAPI spec. Every microservice in your platform gets access to causal inference, Bayesian reasoning, and policy evaluation via HTTP. Docker image, Kubernetes-ready.
 
 ### For Data Engineers
-cynepic-causal reads Arrow/Parquet natively (via Polars). Integrate into Spark (JNI UDF), Dagster/Prefect (task nodes), or dbt (causal assumption validation against model lineage). Audit trails export as OpenTelemetry spans.
+cynepic-causal takes `ndarray` arrays today; Arrow/Parquet ingestion via Polars is planned, not present. Integrate into Spark (JNI UDF), Dagster/Prefect (task nodes), or dbt (causal assumption validation against model lineage). Audit trails export as OpenTelemetry spans.
 
 ---
 
