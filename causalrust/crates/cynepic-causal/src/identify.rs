@@ -8,6 +8,7 @@ use std::collections::HashSet;
 /// A set Z satisfies the backdoor criterion relative to (treatment, outcome) if:
 /// 1. No node in Z is a descendant of treatment
 /// 2. Z blocks every path between treatment and outcome that contains an arrow into treatment
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BackdoorCriterion;
 
 impl BackdoorCriterion {
@@ -49,6 +50,7 @@ impl BackdoorCriterion {
 ///
 /// The front-door criterion provides an alternative identification strategy
 /// when direct backdoor adjustment is not possible due to unmeasured confounders.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FrontDoorCriterion;
 
 impl FrontDoorCriterion {

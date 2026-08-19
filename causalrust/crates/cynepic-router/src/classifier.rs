@@ -39,11 +39,7 @@ fn shannon_entropy(scores: &[(CynefinDomain, f64)]) -> f64 {
         .iter()
         .map(|(_, s)| {
             let p = s / total;
-            if p > 0.0 {
-                -p * p.ln()
-            } else {
-                0.0
-            }
+            if p > 0.0 { -p * p.ln() } else { 0.0 }
         })
         .sum();
     entropy / max_entropy
@@ -59,6 +55,7 @@ pub trait QueryClassifier: Send + Sync {
 /// A simple keyword-based classifier for bootstrapping and testing.
 ///
 /// Production systems should use embedding-based classifiers (Candle + HNSW).
+#[derive(Debug, Clone)]
 pub struct KeywordClassifier {
     patterns: Vec<(Vec<String>, CynefinDomain)>,
 }
@@ -70,30 +67,49 @@ impl KeywordClassifier {
             patterns: vec![
                 // Clear: simple lookups and definitions
                 (
-                    vec!["what is".into(), "define".into(), "look up".into(), "how many".into()],
+                    vec![
+                        "what is".into(),
+                        "define".into(),
+                        "look up".into(),
+                        "how many".into(),
+                    ],
                     CynefinDomain::Clear,
                 ),
                 // Complicated: causal and analytical questions
                 (
                     vec![
-                        "why did".into(), "cause".into(), "effect".into(), "impact".into(),
-                        "correlation".into(), "regression".into(), "because".into(),
+                        "why did".into(),
+                        "cause".into(),
+                        "effect".into(),
+                        "impact".into(),
+                        "correlation".into(),
+                        "regression".into(),
+                        "because".into(),
                     ],
                     CynefinDomain::Complicated,
                 ),
                 // Complex: uncertainty and exploration
                 (
                     vec![
-                        "uncertain".into(), "probability".into(), "might".into(), "explore".into(),
-                        "what if".into(), "scenario".into(), "predict".into(),
+                        "uncertain".into(),
+                        "probability".into(),
+                        "might".into(),
+                        "explore".into(),
+                        "what if".into(),
+                        "scenario".into(),
+                        "predict".into(),
                     ],
                     CynefinDomain::Complex,
                 ),
                 // Chaotic: crisis and emergency
                 (
                     vec![
-                        "emergency".into(), "crisis".into(), "outage".into(), "breach".into(),
-                        "urgent".into(), "critical failure".into(),
+                        "emergency".into(),
+                        "crisis".into(),
+                        "outage".into(),
+                        "breach".into(),
+                        "urgent".into(),
+                        "critical failure".into(),
                     ],
                     CynefinDomain::Chaotic,
                 ),

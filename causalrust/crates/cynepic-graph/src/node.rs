@@ -2,7 +2,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a node in the workflow graph.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Ordered by the underlying name, so node sets can be rendered and serialized
+/// deterministically — which matters for reproducible checkpoints and diffable
+/// execution traces.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub String);
 
 impl NodeId {
@@ -36,10 +40,25 @@ pub trait Node<S: Send + Sync>: Send + Sync {
     }
 }
 
+/// A boxed, pinned future returning the node's next state.
+pub type BoxedNodeFuture<S> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<S, NodeError>> + Send>>;
+
+/// The erased body of an [`FnNode`]: state in, boxed future of state out.
+pub type BoxedNodeFn<S> = Box<dyn Fn(S) -> BoxedNodeFuture<S> + Send + Sync>;
+
 /// A simple function-based node.
 pub struct FnNode<S> {
     name: String,
-    func: Box<dyn Fn(S) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<S, NodeError>> + Send>> + Send + Sync>,
+    func: BoxedNodeFn<S>,
+}
+
+impl<S> std::fmt::Debug for FnNode<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnNode")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: Send + Sync + 'static> FnNode<S> {

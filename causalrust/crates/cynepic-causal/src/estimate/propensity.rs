@@ -10,6 +10,7 @@ use ndarray::{Array1, Array2};
 use super::linear::ATEResult;
 
 /// Propensity score estimator for causal effect estimation.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PropensityScoreEstimator;
 
 impl PropensityScoreEstimator {
@@ -194,7 +195,11 @@ mod tests {
         for i in 0..n {
             let x = next_rng(&mut rng_state) * 2.0 - 1.0;
             covariates[[i, 0]] = x;
-            treatment[i] = if next_rng(&mut rng_state) > 0.5 { 1.0 } else { 0.0 };
+            treatment[i] = if next_rng(&mut rng_state) > 0.5 {
+                1.0
+            } else {
+                0.0
+            };
             // No treatment effect, outcome depends only on X
             outcome[i] = 3.0 * x + next_rng(&mut rng_state) * 0.5;
         }

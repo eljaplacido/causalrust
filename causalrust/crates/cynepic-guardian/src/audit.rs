@@ -31,12 +31,18 @@ impl AuditTrail {
 
     /// Get all entries (clone).
     pub fn entries(&self) -> Vec<AuditEntry> {
-        self.entries.lock().expect("audit trail lock poisoned").clone()
+        self.entries
+            .lock()
+            .expect("audit trail lock poisoned")
+            .clone()
     }
 
     /// Get the number of entries.
     pub fn len(&self) -> usize {
-        self.entries.lock().expect("audit trail lock poisoned").len()
+        self.entries
+            .lock()
+            .expect("audit trail lock poisoned")
+            .len()
     }
 
     /// Whether the trail is empty.
@@ -67,11 +73,17 @@ mod tests {
         let trail = AuditTrail::new();
         assert!(trail.is_empty());
 
-        trail.record(AuditEntry::new("action_1", "test_engine", PolicyDecision::Approve));
+        trail.record(AuditEntry::new(
+            "action_1",
+            "test_engine",
+            PolicyDecision::Approve,
+        ));
         trail.record(AuditEntry::new(
             "action_2",
             "test_engine",
-            PolicyDecision::Reject { reason: "denied".into() },
+            PolicyDecision::Reject {
+                reason: "denied".into(),
+            },
         ));
 
         assert_eq!(trail.len(), 2);
@@ -83,7 +95,11 @@ mod tests {
     #[test]
     fn json_export() {
         let trail = AuditTrail::new();
-        trail.record(AuditEntry::new("deploy", "guardian", PolicyDecision::Approve));
+        trail.record(AuditEntry::new(
+            "deploy",
+            "guardian",
+            PolicyDecision::Approve,
+        ));
         let json = trail.to_json().unwrap();
         assert!(json.contains("deploy"));
     }

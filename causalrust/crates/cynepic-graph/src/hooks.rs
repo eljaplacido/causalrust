@@ -59,7 +59,10 @@ impl EventCollector {
 
     /// Get a snapshot of all collected events.
     pub fn events(&self) -> Vec<GraphEvent> {
-        self.events.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Count the number of `NodeCompleted` events.
@@ -76,7 +79,10 @@ impl EventCollector {
 #[async_trait::async_trait]
 impl GraphHook for EventCollector {
     async fn on_event(&self, event: GraphEvent) {
-        self.events.lock().unwrap_or_else(|e| e.into_inner()).push(event);
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event);
     }
 }
 
@@ -86,6 +92,7 @@ impl GraphHook for EventCollector {
 /// - `debug` for NodeStarted and RouteDecision
 /// - `info` for NodeCompleted and ExecutionCompleted
 /// - `error` for NodeFailed
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TracingHook;
 
 #[async_trait::async_trait]
@@ -109,7 +116,11 @@ impl GraphHook for TracingHook {
                 total_steps,
                 total_ms,
             } => {
-                tracing::info!(total_steps = total_steps, total_ms = total_ms, "Execution completed");
+                tracing::info!(
+                    total_steps = total_steps,
+                    total_ms = total_ms,
+                    "Execution completed"
+                );
             }
             GraphEvent::RouteDecision { from, to, step } => {
                 tracing::debug!(from = %from, to = %to, step = step, "Route decision");

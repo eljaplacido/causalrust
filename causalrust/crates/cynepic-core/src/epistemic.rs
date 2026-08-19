@@ -47,11 +47,7 @@ pub struct ReasoningStep {
 
 impl ReasoningStep {
     /// Create a new reasoning step.
-    pub fn new(
-        engine: impl Into<String>,
-        conclusion: impl Into<String>,
-        confidence: f64,
-    ) -> Self {
+    pub fn new(engine: impl Into<String>, conclusion: impl Into<String>, confidence: f64) -> Self {
         Self {
             engine: engine.into(),
             conclusion: conclusion.into(),

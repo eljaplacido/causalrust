@@ -48,6 +48,7 @@ pub struct CounterfactualResult {
 }
 
 /// Engine for counterfactual reasoning using linear structural equations.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CounterfactualEngine;
 
 impl CounterfactualEngine {
@@ -207,6 +208,8 @@ mod tests {
         assert!(results[1].counterfactual_outcome < results[1].query.observed_outcome);
 
         // Untreated units: counterfactual = observed (no shift)
-        assert!((results[2].counterfactual_outcome - results[2].query.observed_outcome).abs() < 1e-10);
+        assert!(
+            (results[2].counterfactual_outcome - results[2].query.observed_outcome).abs() < 1e-10
+        );
     }
 }

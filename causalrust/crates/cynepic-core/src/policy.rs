@@ -57,7 +57,11 @@ pub struct AuditEntry {
 
 impl AuditEntry {
     /// Create a new audit entry with the current timestamp.
-    pub fn new(action: impl Into<String>, engine: impl Into<String>, decision: PolicyDecision) -> Self {
+    pub fn new(
+        action: impl Into<String>,
+        engine: impl Into<String>,
+        decision: PolicyDecision,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
             timestamp: chrono::Utc::now(),

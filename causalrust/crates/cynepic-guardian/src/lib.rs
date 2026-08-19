@@ -28,8 +28,8 @@ pub use bias_audit::{BiasAuditResult, BiasAuditor};
 pub use circuit_breaker::CircuitBreaker;
 pub use hitl::{EscalationEvent, EscalationManager, EscalationStatus};
 pub use loop_detector::{LoopDetector, LoopViolation};
+#[cfg(feature = "rego")]
+pub use policy::RegoPolicyEvaluator;
 pub use policy::{PolicyChain, PolicyEvaluator};
 pub use rate_limiter::{RateLimitDecision, RateLimiter};
 pub use risk::RiskAwareEvaluator;
-#[cfg(feature = "rego")]
-pub use policy::RegoPolicyEvaluator;

@@ -4,8 +4,8 @@
 //! are d-separated given a conditioning set.
 
 use crate::dag::CausalDag;
-use petgraph::graph::NodeIndex;
 use petgraph::Direction;
+use petgraph::graph::NodeIndex;
 use std::collections::{HashSet, VecDeque};
 
 /// Test whether `x` and `y` are d-separated given conditioning set `z`.
@@ -27,10 +27,7 @@ pub fn d_separated(dag: &CausalDag, x: &str, y: &str, z: &HashSet<String>) -> bo
     let graph = dag.inner_graph();
 
     // Precompute: which nodes are in Z or have a descendant in Z.
-    let z_indices: HashSet<NodeIndex> = z
-        .iter()
-        .filter_map(|name| dag.node_index(name))
-        .collect();
+    let z_indices: HashSet<NodeIndex> = z.iter().filter_map(|name| dag.node_index(name)).collect();
 
     // Find all ancestors of Z nodes (nodes that have a descendant in Z).
     let ancestors_of_z = ancestors_of_set(dag, &z_indices);

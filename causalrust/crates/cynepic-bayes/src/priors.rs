@@ -195,7 +195,11 @@ impl DirichletMultinomial {
     /// # Panics
     /// Panics if `i >= self.k()`.
     pub fn marginal_mean(&self, i: usize) -> f64 {
-        assert!(i < self.alphas.len(), "category index {i} out of bounds (k={})", self.alphas.len());
+        assert!(
+            i < self.alphas.len(),
+            "category index {i} out of bounds (k={})",
+            self.alphas.len()
+        );
         let total: f64 = self.alphas.iter().sum();
         self.alphas[i] / total
     }
@@ -205,7 +209,11 @@ impl DirichletMultinomial {
     /// # Panics
     /// Panics if `i >= self.k()`.
     pub fn marginal_variance(&self, i: usize) -> f64 {
-        assert!(i < self.alphas.len(), "category index {i} out of bounds (k={})", self.alphas.len());
+        assert!(
+            i < self.alphas.len(),
+            "category index {i} out of bounds (k={})",
+            self.alphas.len()
+        );
         let total: f64 = self.alphas.iter().sum();
         let ai = self.alphas[i];
         (ai * (total - ai)) / (total * total * (total + 1.0))

@@ -44,9 +44,7 @@ pub enum EscalationStatus {
         at: chrono::DateTime<chrono::Utc>,
     },
     /// The escalation timed out without a response.
-    TimedOut {
-        at: chrono::DateTime<chrono::Utc>,
-    },
+    TimedOut { at: chrono::DateTime<chrono::Utc> },
 }
 
 /// Manages pending escalation events.

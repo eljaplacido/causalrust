@@ -1,6 +1,6 @@
+use cynepic_core::CynefinDomain;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use cynepic_core::CynefinDomain;
 
 /// Configuration for the Cynefin router.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -34,10 +34,7 @@ impl SimpleRng {
 
     /// Returns a pseudo-random f64 in [0, 1).
     fn next_f64(&mut self) -> f64 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((self.state >> 33) as f64) / (2.0_f64.powi(31))
     }
 
@@ -60,9 +57,8 @@ pub fn placebo_treatment(
 
     // Generate random "treatment" (coin flip)
     let mut rng = SimpleRng::new(42);
-    let placebo_treatment: Array1<f64> = Array1::from_shape_fn(n, |_| {
-        if rng.next_f64() < 0.5 { 1.0 } else { 0.0 }
-    });
+    let placebo_treatment: Array1<f64> =
+        Array1::from_shape_fn(n, |_| if rng.next_f64() < 0.5 { 1.0 } else { 0.0 });
 
     let result = crate::estimate::linear::LinearATEEstimator::difference_in_means(
         &placebo_treatment,
@@ -255,8 +251,7 @@ mod tests {
         assert!(
             result.passed,
             "Random common cause should not change a real effect much: original={}, refuted={}",
-            result.original_effect,
-            result.refuted_effect
+            result.original_effect, result.refuted_effect
         );
     }
 
@@ -278,8 +273,7 @@ mod tests {
         assert!(
             result.passed,
             "Subset validation should be stable for a clear effect: original={}, refuted={}",
-            result.original_effect,
-            result.refuted_effect
+            result.original_effect, result.refuted_effect
         );
     }
 
@@ -300,9 +294,7 @@ mod tests {
         assert!(
             result.passed,
             "Bootstrap should be stable for a clear effect: original={}, refuted={}",
-            result.original_effect,
-            result.refuted_effect
+            result.original_effect, result.refuted_effect
         );
     }
 }
-

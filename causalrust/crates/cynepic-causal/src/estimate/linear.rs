@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Given treatment assignment T, outcome Y, and covariates X,
 /// fits Y = β₀ + β₁·T + β₂·X + ε and returns β₁ as the ATE estimate.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct LinearATEEstimator;
 
 /// Result of an ATE estimation.
@@ -25,7 +26,11 @@ impl LinearATEEstimator {
     /// Suitable when the backdoor criterion is satisfied and adjustment
     /// is handled by sample selection.
     pub fn difference_in_means(treatment: &Array1<f64>, outcome: &Array1<f64>) -> ATEResult {
-        assert_eq!(treatment.len(), outcome.len(), "treatment and outcome must have same length");
+        assert_eq!(
+            treatment.len(),
+            outcome.len(),
+            "treatment and outcome must have same length"
+        );
 
         let n = treatment.len();
         let mut sum_treated = 0.0;
@@ -137,7 +142,7 @@ impl LinearATEEstimator {
 
         // SE of beta[1] = sqrt(sigma^2 * (X'X)^{-1}[1,1])
         let xt_x_inv = invert_matrix(&xt_x, cols);
-        let std_error = (sigma2 * xt_x_inv[1 * cols + 1]).sqrt();
+        let std_error = (sigma2 * xt_x_inv[cols + 1]).sqrt();
 
         ATEResult {
             ate,
@@ -173,9 +178,7 @@ fn solve_normal_equation(a: &[f64], b: &[f64], dim: usize) -> Vec<f64> {
 
         if max_row != col {
             for c in 0..=dim {
-                let tmp = aug[col * (dim + 1) + c];
-                aug[col * (dim + 1) + c] = aug[max_row * (dim + 1) + c];
-                aug[max_row * (dim + 1) + c] = tmp;
+                aug.swap(col * (dim + 1) + c, max_row * (dim + 1) + c);
             }
         }
 
@@ -228,9 +231,7 @@ fn invert_matrix(a: &[f64], dim: usize) -> Vec<f64> {
 
         if max_row != col {
             for c in 0..(2 * dim) {
-                let tmp = aug[col * (2 * dim) + c];
-                aug[col * (2 * dim) + c] = aug[max_row * (2 * dim) + c];
-                aug[max_row * (2 * dim) + c] = tmp;
+                aug.swap(col * (2 * dim) + c, max_row * (2 * dim) + c);
             }
         }
 
@@ -267,7 +268,7 @@ fn invert_matrix(a: &[f64], dim: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{array, Array2};
+    use ndarray::{Array2, array};
 
     #[test]
     fn difference_in_means_basic() {

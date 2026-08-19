@@ -171,8 +171,14 @@ mod tests {
     fn deny_after_exhaustion() {
         let mut limiter = RateLimiter::new(2, 1.0);
         // Consume both tokens
-        assert!(matches!(limiter.check("user_1"), RateLimitDecision::Allowed { .. }));
-        assert!(matches!(limiter.check("user_1"), RateLimitDecision::Allowed { .. }));
+        assert!(matches!(
+            limiter.check("user_1"),
+            RateLimitDecision::Allowed { .. }
+        ));
+        assert!(matches!(
+            limiter.check("user_1"),
+            RateLimitDecision::Allowed { .. }
+        ));
         // Third request should be denied
         match limiter.check("user_1") {
             RateLimitDecision::Denied { retry_after_ms } => {
@@ -186,9 +192,15 @@ mod tests {
     fn refill_after_time() {
         let mut limiter = RateLimiter::new(1, 1000.0); // very fast refill: 1000/sec
         // Consume the single token
-        assert!(matches!(limiter.check("user_1"), RateLimitDecision::Allowed { .. }));
+        assert!(matches!(
+            limiter.check("user_1"),
+            RateLimitDecision::Allowed { .. }
+        ));
         // Should be denied immediately
-        assert!(matches!(limiter.check("user_1"), RateLimitDecision::Denied { .. }));
+        assert!(matches!(
+            limiter.check("user_1"),
+            RateLimitDecision::Denied { .. }
+        ));
         // Sleep a small amount to allow refill (1000 tokens/sec => 1ms = 1 token)
         std::thread::sleep(Duration::from_millis(5));
         // Should be allowed again after refill

@@ -1,5 +1,5 @@
-use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
+use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -121,7 +121,7 @@ impl CausalDag {
 
     /// Check whether the graph is actually acyclic.
     pub fn is_acyclic(&self) -> bool {
-        petgraph::algo::is_cyclic_directed(&self.graph) == false
+        !petgraph::algo::is_cyclic_directed(&self.graph)
     }
 }
 

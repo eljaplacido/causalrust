@@ -8,6 +8,7 @@ use ndarray::{Array1, Array2};
 use super::linear::ATEResult;
 
 /// Instrumental variable estimator.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct IVEstimator;
 
 impl IVEstimator {
@@ -93,7 +94,7 @@ impl IVEstimator {
 
         // SE of beta[1]: sqrt(sigma^2 * (X'X)^{-1}[1,1])
         let xt_x_inv = invert_matrix(&xt_x, cols2);
-        let std_error = (sigma2 * xt_x_inv[1 * cols2 + 1]).sqrt();
+        let std_error = (sigma2 * xt_x_inv[cols2 + 1]).sqrt();
 
         ATEResult {
             ate,
@@ -131,9 +132,7 @@ fn solve_linear_system(a: &[f64], b: &[f64], dim: usize) -> Vec<f64> {
         // Swap rows
         if max_row != col {
             for c in 0..=dim {
-                let tmp = aug[col * (dim + 1) + c];
-                aug[col * (dim + 1) + c] = aug[max_row * (dim + 1) + c];
-                aug[max_row * (dim + 1) + c] = tmp;
+                aug.swap(col * (dim + 1) + c, max_row * (dim + 1) + c);
             }
         }
 
@@ -190,9 +189,7 @@ fn invert_matrix(a: &[f64], dim: usize) -> Vec<f64> {
 
         if max_row != col {
             for c in 0..(2 * dim) {
-                let tmp = aug[col * (2 * dim) + c];
-                aug[col * (2 * dim) + c] = aug[max_row * (2 * dim) + c];
-                aug[max_row * (2 * dim) + c] = tmp;
+                aug.swap(col * (2 * dim) + c, max_row * (2 * dim) + c);
             }
         }
 

@@ -20,6 +20,7 @@ pub struct SamplerResult {
 }
 
 /// Metropolis-Hastings sampler for arbitrary log-density functions.
+#[derive(Debug, Clone)]
 pub struct MetropolisHastings {
     /// Standard deviation of the Gaussian proposal.
     pub proposal_std: f64,
@@ -105,6 +106,7 @@ pub struct MultiSamplerResult {
 /// Multi-dimensional Metropolis-Hastings with diagonal Gaussian proposal.
 ///
 /// Proposes by adding independent N(0, proposal_std_i) to each dimension.
+#[derive(Debug, Clone)]
 pub struct MultiDimMH {
     /// Per-dimension proposal standard deviations.
     pub proposal_stds: Vec<f64>,
@@ -198,6 +200,7 @@ impl MultiDimMH {
 /// Uses the Robbins-Monro algorithm to target a specific acceptance rate.
 /// During warmup, the proposal standard deviation is adjusted on a log scale:
 /// `log_std += step_size * (acceptance - target)`.
+#[derive(Debug, Clone)]
 pub struct AdaptiveMH {
     /// Target acceptance rate (typically 0.234 for high-dim, 0.44 for 1D).
     pub target_acceptance: f64,
@@ -289,10 +292,7 @@ mod tests {
 
         // Check that mean is approximately 0
         let mean: f64 = result.samples.iter().sum::<f64>() / result.samples.len() as f64;
-        assert!(
-            mean.abs() < 0.2,
-            "Mean should be near 0, got {mean}"
-        );
+        assert!(mean.abs() < 0.2, "Mean should be near 0, got {mean}");
 
         // Check acceptance rate is reasonable
         assert!(
@@ -380,17 +380,15 @@ mod tests {
         let result = sampler.sample(log_density, 0.0);
 
         let mean: f64 = result.samples.iter().sum::<f64>() / 5000.0;
-        assert!(
-            mean.abs() < 0.1,
-            "Mean should be near 0, got {mean}"
-        );
+        assert!(mean.abs() < 0.1, "Mean should be near 0, got {mean}");
 
-        let var: f64 =
-            result.samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / 5000.0;
+        let var: f64 = result
+            .samples
+            .iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
+            / 5000.0;
         // Variance should be approximately 0.01
-        assert!(
-            var < 0.05,
-            "Variance should be small (~0.01), got {var}"
-        );
+        assert!(var < 0.05, "Variance should be small (~0.01), got {var}");
     }
 }
