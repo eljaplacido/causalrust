@@ -70,6 +70,11 @@ cargo test --workspace --all-features
 cargo deny check all                                     # cargo install cargo-deny
 cargo hack check --workspace --feature-powerset --no-dev-deps
 cargo check --target wasm32-wasip1 -p cynepic-core -p cynepic-causal -p cynepic-bayes
+
+# Not in the PR gate — weekly, in .github/workflows/miri.yml. Miri must rebuild
+# the whole dependency tree under its interpreter and exceeded 30 minutes even
+# scoped to --lib. Low yield anyway: unsafe_code is forbid workspace-wide.
+cargo miri test --lib -p cynepic-core -p cynepic-causal -p cynepic-bayes
 ```
 
 **Lint policy** lives in `[workspace.lints]` in `causalrust/Cargo.toml`, and each

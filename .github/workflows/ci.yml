@@ -215,42 +215,18 @@ jobs:
           name: coverage-lcov
           path: causalrust/lcov.info
 
-  # ---------------------------------------------------------------------------
-  # Undefined behaviour. The crates forbid unsafe, so this is mainly a check on
-  # dependencies and on arithmetic in the numeric kernels. Scoped to the two
-  # crates with no async runtime — Miri cannot run tokio's multi-thread reactor.
-  # ---------------------------------------------------------------------------
-  miri:
-    name: miri
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: causalrust
-      # `--lib` only, deliberately.
-      #
-      # Miri interprets rather than executes, at roughly a 100x slowdown. The
-      # integration suites in these two crates are statistical simulations —
-      # 300 replications per coverage cell, 600 per SBC run — and under Miri
-      # they take hours without checking anything a unit test does not. This
-      # job ran for over 40 minutes before being scoped down.
-      #
-      # The unit tests are where the UB-prone code actually is: the pivoted QR
-      # and the IRLS step index raw `f64` buffers, and the incomplete beta and
-      # gamma routines run tight numeric loops. Those are what Miri is for.
-      - name: Miri (numeric kernels)
-        # Isolation is disabled because the belief-tracker timestamps
-        # observations with `chrono::Utc::now()`, and Miri's sandbox blocks
-        # `clock_gettime`. This weakens nothing about the UB checking itself.
-        env:
-          MIRIFLAGS: "-Zmiri-disable-isolation"
-        run: cargo miri test --lib -p cynepic-causal -p cynepic-bayes -p cynepic-core
-
+  # NOTE: Miri is NOT in this pipeline. It lives in `.github/workflows/miri.yml`
+  # on a weekly schedule.
+  #
+  # Miri must rebuild the entire dependency tree under its own interpreter with
+  # a nightly toolchain and no shared cache — ndarray, statrs -> nalgebra,
+  # regorus, tokio. Scoped to `--lib` it still exceeded 30 minutes without
+  # finishing, so it cannot gate a pull request.
+  #
+  # It is also low-yield here: `unsafe_code = "forbid"` across the workspace, so
+  # the UB Miri looks for is prevented by construction in our own code. Its real
+  # value is catching a soundness regression in a dependency, which is worth a
+  # weekly run and not worth blocking every PR on.
 
   # ---------------------------------------------------------------------------
   # WASM reach, guarded from day one so the roadmap's WASM target does not become
@@ -425,7 +401,6 @@ jobs:
       - msrv
       - supply-chain
       - coverage
-      - miri
       - wasm
       - package
       - findings
