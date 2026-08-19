@@ -11,10 +11,13 @@
 >   **0.000 recall on Chaotic** ([R1](#r1), open). It abstains rather than
 >   guessing, which is what makes it survivable behind an escalation policy.
 >
-> Three crates remain unmeasured: `cynepic-guardian`, `cynepic-graph` and
-> `cynepic-core`. Their tests pass, which says the code does what its author
-> intended — not that the intention was right. That distinction is what the
-> measured crates keep demonstrating.
+> - `cynepic-guardian` — circuit breaker, rate limiter and loop detector are
+>   property-tested over operation sequences ([G1](#g1), closed).
+>
+> Two crates remain unmeasured: `cynepic-graph` and `cynepic-core`. Their tests
+> pass, which says the code does what its author intended — not that the
+> intention was right. That distinction is what the measured crates keep
+> demonstrating.
 
 Single source of truth for every finding in the workspace. Everything else that
 mentions them — the `allow` entries in `[workspace.lints]`, the spec names in
@@ -26,6 +29,7 @@ restate the detail.
 | C | `cynepic-causal` | `tests/findings.rs` |
 | B | `cynepic-bayes` | `tests/calibration.rs` |
 | R | `cynepic-router` | `tests/routing_accuracy.rs` |
+| G | `cynepic-guardian` | `tests/guardrails.rs` |
 
 ## How a finding moves
 
@@ -55,6 +59,7 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C14](#c14) | `estimate::propensity` | IPW under-covers where weights are heavy | High | **OPEN** |
 | [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
 | [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** |
+| [G1](#g1) | `guardian::circuit_breaker` | No half-open state; whole load restored on a timer | **Critical** | **Closed** |
 
 ```
 open specs:   18   →   20   →   13   →   2   →   5
@@ -67,6 +72,50 @@ first time. A ledger that only shrinks is a ledger that has stopped looking.
 Severity is about silence, not size. A defect that makes the crate panic is
 High. One that makes it return a confident, plausible, wrong number is Critical,
 because nothing downstream can detect it.
+
+---
+
+## <a id="g1"></a>G1 — the circuit breaker had no half-open state · Closed
+
+The breaker held a single `is_open` boolean. Once `reset_timeout` elapsed,
+`allow()` returned `true` to **every** caller while `is_open()` still reported
+`true`. The code's own comment said "Allow one attempt (half-open)"; nothing
+counted the attempts.
+
+Measured: **100 of 100 calls admitted** after the timeout.
+
+The consequence is precise. A dependency goes down, the breaker trips and
+shields it, the timeout elapses — and instead of one probe deciding whether the
+dependency has recovered, the entire backed-up load arrives at once. That is the
+thundering herd the breaker was installed to prevent, now delivered on a timer,
+and it repeats every `reset_timeout` for as long as the dependency stays down.
+
+**Fixed** by replacing the boolean with a three-valued state atomic and making
+the `Open -> HalfOpen` transition a compare-and-exchange. Exactly one caller
+wins the exchange and becomes the probe; every other caller observes `HalfOpen`
+and is refused.
+
+A boolean cannot express this. Two concurrent callers both read "timeout
+elapsed" and, with nothing to claim, both proceed — which is why the fix is a
+state machine rather than a counter. The test that pins it down races 64 tasks
+at a just-expired breaker and asserts exactly one is admitted.
+
+Also added: `record_failure` from `HalfOpen` re-opens for a *full* timeout
+rather than leaving the original trip time in place, `probes_admitted()` so
+"how often did we retry a dead dependency" is answerable at all, and a clamp on
+a zero `failure_threshold`, which would otherwise trip before any failure and
+pin the breaker open forever.
+
+**One spec was not a witness.** `g1_failed_probe_reopens_the_breaker` passed
+before the fix — `record_failure` already restarted the trip clock — so it never
+demonstrated the defect. Per the ratchet's third invariant it runs as a guard
+rather than an accusation.
+
+Specs: `g1_half_open_admits_exactly_one_probe`,
+`g1_failed_probe_reopens_the_breaker`, plus eleven guardrail properties covering
+threshold accuracy, concurrent failure counting, burst capacity, per-key
+isolation, retry hints, non-consuming peek, refill rate, overvisit detection,
+alternation detection and reset.
 
 ---
 

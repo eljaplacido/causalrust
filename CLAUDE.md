@@ -50,7 +50,7 @@ causalrust/                    # Git root
 ```bash
 cd causalrust/causalrust
 cargo build --workspace            # Build all crates
-cargo test --workspace --all-features   # 285 tests
+cargo test --workspace --all-features   # 305 tests
 cargo test -p cynepic-core         # Test single crate
 cargo test -p cynepic-guardian --no-default-features  # Guardian without rego
 cargo test -p cynepic-guardian --features rego         # Guardian with rego
@@ -148,14 +148,14 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | Crate | Status | Tests | Key Capabilities |
 |-------|--------|-------|-----------------|
 | core | Complete | 13 | Domain enum, engine trait, policy types, audit types, epistemic state |
-| guardian | Solid | 30 | Policy chains, Rego v1 (+ explicit v0 opt-in), circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
+| guardian | **Measured** | 35 + 15 guardrails | Policy chains, Rego v1 (+ v0 opt-in), circuit breaker (**real half-open state**), loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
 | causal | **Validated** | 89 + 32 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
 | router | **Measured** | 17 + 8 accuracy | Keyword classifier (**macro F1 0.290, 0.000 recall on Chaotic**), entropy scoring, cost-aware routing, budget tracking, drift detection |
 | bayes | **Calibrated** | 30 + 12 calibration | 4 conjugate priors with **exact** quantile intervals, 3 MCMC samplers (SBC-verified), belief tracker, tool reliability |
 | graph | Solid | 10 | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 | testkit | Internal | 44 | Ground-truth DGPs, coverage harness, metamorphic relations, Bayesian calibration + SBC, 96-query labelled routing corpus (`publish = false`) |
 
-**Total: 285 tests, 5 open findings specs across 3 measured crates, 0 warnings.**
+**Total: 305 tests, 5 open findings specs across 4 measured crates, 0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now
@@ -196,9 +196,14 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 > keyword lists against the corpus would only overfit to it. It abstains rather
 > than guessing, which is what makes it survivable behind an escalation policy.
 >
-> **`cynepic-guardian`, `cynepic-graph` and `cynepic-core` are unmeasured.**
-> Their tests pass, which says the code does what its author intended — not
-> that the intention was right.
+> **`cynepic-guardian` is property-tested.** Its circuit breaker had no real
+> half-open state — after the reset timeout every caller was admitted, not one
+> probe, so a still-down dependency got the whole backed-up load on a timer.
+> Fixed with a three-valued state atomic and a compare-and-exchange probe claim.
+>
+> **`cynepic-graph` and `cynepic-core` are unmeasured.** Their tests pass, which
+> says the code does what its author intended — not that the intention was
+> right.
 
 ### Known Gaps
 - **Benchmarks are baselines, not claims.** `benches/` exists (criterion, in

@@ -35,6 +35,7 @@ SUITES=(
     "cynepic-causal:findings"
     "cynepic-router:routing_accuracy"
     "cynepic-bayes:calibration"
+    "cynepic-guardian:guardrails"
 )
 
 open=0
