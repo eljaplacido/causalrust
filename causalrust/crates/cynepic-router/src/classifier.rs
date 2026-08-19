@@ -117,17 +117,39 @@ impl KeywordClassifier {
         }
     }
 
+    /// Score one domain against a query.
+    ///
+    /// The score is the **total length of query text matched**, not the
+    /// fraction of the keyword list that matched.
+    ///
+    /// The previous form was `matches / keywords.len()`, which made the verdict
+    /// depend on how many keywords an author happened to write for a domain.
+    /// `Clear` has four and `Complicated` seven, so a single match scored 0.25
+    /// against 0.14 — a query matching one keyword from each routed to `Clear`
+    /// purely because its list was shorter. List length is an authoring
+    /// artifact and carries no evidence about the query.
+    ///
+    /// Weighting by matched length also makes a specific phrase outrank a
+    /// generic one: "critical failure" is stronger evidence than "cause", and
+    /// under a count-based score they were equal.
     fn score_domain(&self, query: &str, keywords: &[String]) -> f64 {
         let query_lower = query.to_lowercase();
-        let matches = keywords
+        let matched_len: usize = keywords
             .iter()
             .filter(|kw| query_lower.contains(kw.as_str()))
-            .count();
-        if keywords.is_empty() {
-            0.0
-        } else {
-            matches as f64 / keywords.len() as f64
+            .map(String::len)
+            .sum();
+
+        if matched_len == 0 || query_lower.is_empty() {
+            return 0.0;
         }
+
+        // Normalise by query length so the score is comparable across queries
+        // of different sizes, and saturate at 1.0 so a long query stuffed with
+        // keywords cannot dominate on volume alone.
+        #[allow(clippy::cast_precision_loss)]
+        let coverage = matched_len as f64 / query_lower.len() as f64;
+        coverage.min(1.0)
     }
 }
 

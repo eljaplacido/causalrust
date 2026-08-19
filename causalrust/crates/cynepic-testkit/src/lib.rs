@@ -22,6 +22,9 @@
 //!   replications.
 //! - [`metamorphic`] — relations that must hold for *any* correct estimator,
 //!   regardless of the data.
+//! - [`corpus`] — a labelled query corpus for routing accuracy, written
+//!   without reference to the classifier's keyword lists so the score measures
+//!   the classifier rather than restating it.
 //! - [`calibration`] — the Bayesian counterpart: credible-interval coverage
 //!   under draws from the prior, and simulation-based calibration for
 //!   samplers, whose rank histogram diagnoses *how* a posterior is wrong
@@ -48,6 +51,7 @@
 #![forbid(unsafe_code)]
 
 pub mod calibration;
+pub mod corpus;
 pub mod dgp;
 pub mod metamorphic;
 pub mod validate;

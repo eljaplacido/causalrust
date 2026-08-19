@@ -1,42 +1,69 @@
 #!/usr/bin/env bash
 #
-# Findings ratchet.
+# Findings ratchet — workspace-wide.
 #
-# Every open correctness finding in docs/FINDINGS.md has a failing spec in
-# crates/cynepic-causal/tests/findings.rs, marked `#[ignore]`. This script
-# counts them and fails if the count has gone UP.
+# Every open correctness finding has a failing spec, marked `#[ignore]`, in one
+# of the suites listed below. This script counts them and fails if the count has
+# gone UP.
 #
-# Why a ratchet and not a plain test: the specs are supposed to fail. Running
-# them in CI as ordinary tests would make CI permanently red, and a permanently
-# red CI is one nobody reads. Counting them instead makes the debt visible,
-# blocks new debt, and turns "we fixed it" into an arithmetic claim.
+# Why a ratchet and not a plain test: the specs are SUPPOSED to fail. Running
+# them as ordinary tests would make CI permanently red, and a permanently red CI
+# is one nobody reads. Counting them instead makes the debt visible, blocks new
+# debt, and turns "we fixed it" into an arithmetic claim.
 #
-# The count may only ever go down. To lower it, delete an `#[ignore]` in the
-# same pull request as the fix and lower BASELINE here. Raising BASELINE
-# requires a new entry in docs/FINDINGS.md and should be argued for in review.
+# Three invariants are enforced:
+#
+#   1. The open count may only go down.
+#   2. The specs still COMPILE against the current API — otherwise an API change
+#      could orphan the lot while the count kept reporting a reassuring number
+#      about dead code.
+#   3. Every open spec still FAILS. A spec that has started passing is either a
+#      fix nobody claimed or a spec that witnesses nothing, and both look
+#      identical to outstanding work until something checks. This is the check
+#      that caught four mislabelled specs during the first re-baseline.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Open specs at the last ratchet. Lower this with each fix; never raise it
-# without a corresponding docs/FINDINGS.md entry.
-BASELINE=2
+# Open specs at the last ratchet. Lower with each fix; never raise without a
+# corresponding docs/FINDINGS.md entry in the same commit.
+BASELINE=5
 
-SPEC_FILE="crates/cynepic-causal/tests/findings.rs"
+# Suites carrying findings specs: "<crate>:<test target>".
+SUITES=(
+    "cynepic-causal:findings"
+    "cynepic-router:routing_accuracy"
+    "cynepic-bayes:calibration"
+)
 
-if [[ ! -f "$SPEC_FILE" ]]; then
-    echo "findings-ratchet: $SPEC_FILE is missing." >&2
-    echo "The spec file is the ledger. Deleting it does not close the findings." >&2
+open=0
+missing=0
+
+for suite in "${SUITES[@]}"; do
+    crate="${suite%%:*}"
+    target="${suite##*:}"
+    file="crates/${crate}/tests/${target}.rs"
+
+    if [[ ! -f "$file" ]]; then
+        echo "findings-ratchet: $file is missing." >&2
+        echo "The spec files are the ledger. Deleting one does not close its findings." >&2
+        missing=1
+        continue
+    fi
+
+    # Count `#[ignore]` attributes at line starts only, so the doc comments that
+    # discuss `#[ignore]` are not counted.
+    count=$(grep -c '^#\[ignore' "$file" || true)
+    printf 'findings-ratchet: %-30s %s open\n' "${crate}/${target}" "$count"
+    open=$((open + count))
+done
+
+if (( missing == 1 )); then
     exit 1
 fi
 
-# Count `#[ignore]` attributes on test functions. Restricted to line starts so
-# the doc comment at the top of the file — which discusses `#[ignore]` — is not
-# counted.
-open=$(grep -c '^#\[ignore' "$SPEC_FILE" || true)
-
-echo "findings-ratchet: ${open} open specs (baseline ${BASELINE})"
+echo "findings-ratchet: ${open} open specs total (baseline ${BASELINE})"
 
 if (( open > BASELINE )); then
     cat >&2 <<EOF
@@ -59,57 +86,48 @@ if (( open < BASELINE )); then
     cat <<EOF
 
 Open findings went DOWN, ${BASELINE} -> ${open}. Lower BASELINE in
-scripts/findings-ratchet.sh to ${open} to lock the improvement in, and mark
-the finding closed in docs/FINDINGS.md.
+scripts/findings-ratchet.sh to ${open} to lock the improvement in, and mark the
+finding closed in docs/FINDINGS.md.
 
 EOF
     exit 1
 fi
 
-# The specs must still COMPILE against the current API even though they are
-# ignored. Without this, an API change could silently orphan every spec and the
-# count above would keep reporting a reassuring number about dead code.
-echo "findings-ratchet: checking specs still compile against the current API"
-cargo test -p cynepic-causal --test findings --no-run --quiet
+for suite in "${SUITES[@]}"; do
+    crate="${suite%%:*}"
+    target="${suite##*:}"
 
-# Every #[ignore]d spec must still FAIL. A spec that has started passing is
-# either fixed — in which case delete the #[ignore] and claim the win — or it
-# never witnessed its finding in the first place. Both are things to know, and
-# neither should sit undetected behind an `#[ignore]` that makes it look like
-# outstanding work.
-#
-# This is the check that keeps the ledger honest. Counting alone would let a
-# file full of vacuous specs report a large, reassuring number.
-echo "findings-ratchet: confirming every open spec still fails"
-ignored_out=$(cargo test -p cynepic-causal --test findings -- --ignored 2>&1 || true)
-passing=$(printf '%s\n' "$ignored_out" | grep -cE '^test .* \.\.\. ok$' || true)
+    echo "findings-ratchet: ${crate}/${target} — checking specs compile"
+    cargo test -p "$crate" --test "$target" --no-run --quiet
 
-if (( passing > 0 )); then
-    cat >&2 <<EOF
+    echo "findings-ratchet: ${crate}/${target} — confirming open specs still fail"
+    ignored_out=$(cargo test -p "$crate" --test "$target" -- --ignored 2>&1 || true)
+    passing=$(printf '%s\n' "$ignored_out" | grep -cE '^test .* \.\.\. ok$' || true)
 
-FAIL: ${passing} spec(s) marked #[ignore] now PASS.
+    if (( passing > 0 )); then
+        cat >&2 <<EOF
+
+FAIL: ${passing} spec(s) in ${crate}/${target} marked #[ignore] now PASS.
 
 EOF
-    printf '%s\n' "$ignored_out" | grep -E '^test .* \.\.\. ok$' >&2
-    cat >&2 <<'EOF'
+        printf '%s\n' "$ignored_out" | grep -E '^test .* \.\.\. ok$' >&2
+        cat >&2 <<'EOF'
 
 A passing spec behind an #[ignore] is one of two things:
 
   - The finding is fixed. Delete the #[ignore], lower BASELINE, and mark it
     closed in docs/FINDINGS.md.
   - The spec never witnessed the defect. Sharpen it until it fails, or move it
-    to the always-run suite as a regression guard and say what it actually
-    guards.
+    to the always-run suite as a regression guard and say what it guards.
 
-Do not leave it as it is. It currently reads as outstanding work that nobody
-is doing, which is the one thing this ledger exists to prevent.
+Do not leave it as it is. It currently reads as outstanding work that nobody is
+doing, which is the one thing this ledger exists to prevent.
 EOF
-    exit 1
-fi
+        exit 1
+    fi
 
-# The always-run half must be green: those are the measured-sound behaviours
-# (OLS coverage, the metamorphic relations) and they are regression guards now.
-echo "findings-ratchet: checking the regression guards still hold"
-cargo test -p cynepic-causal --test findings --quiet
+    echo "findings-ratchet: ${crate}/${target} — checking the regression guards hold"
+    cargo test -p "$crate" --test "$target" --quiet
+done
 
 echo "findings-ratchet: ok — ${open} open, all failing as expected"

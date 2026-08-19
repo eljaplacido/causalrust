@@ -13,6 +13,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+cynepic-core = { workspace = true }
 ndarray = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

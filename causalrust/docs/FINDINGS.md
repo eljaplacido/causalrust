@@ -1,20 +1,36 @@
-# Correctness findings — `cynepic-causal`
+# Correctness findings — cynepic-rs
 
-> **Status: eleven of thirteen findings closed. One new finding opened by the
-> fix.** `LinearATEEstimator` achieves nominal coverage on all nine grid cells.
-> IPW achieves nominal coverage on seven of eight estimable cells and
-> **under-covers by ~8 points under strong confounding** (C14, open). Read the
-> [coverage table](#measured-coverage) before using a number from this crate.
+> **Status: twelve findings closed, two open, across three measured crates.**
+>
+> - `cynepic-causal` — `ols_adjusted` is nominal on all nine grid cells; IPW is
+>   nominal on seven of eight estimable cells and **under-covers by ~8 points
+>   under strong confounding** ([C14](#c14), open).
+> - `cynepic-bayes` — every conjugate interval is calibrated and both samplers
+>   pass simulation-based calibration ([B1](#b1), closed).
+> - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
+>   **0.000 recall on Chaotic** ([R1](#r1), open). It abstains rather than
+>   guessing, which is what makes it survivable behind an escalation policy.
+>
+> Three crates remain unmeasured: `cynepic-guardian`, `cynepic-graph` and
+> `cynepic-core`. Their tests pass, which says the code does what its author
+> intended — not that the intention was right. That distinction is what the
+> measured crates keep demonstrating.
 
-Single source of truth for the C-series findings. Everything else that mentions
-them — the `allow` entries in `[workspace.lints]`, the spec names in
-`crates/cynepic-causal/tests/findings.rs`, the status table in `CLAUDE.md` —
-points here and must not restate the detail.
+Single source of truth for every finding in the workspace. Everything else that
+mentions them — the `allow` entries in `[workspace.lints]`, the spec names in
+the suites below, the status table in `CLAUDE.md` — points here and must not
+restate the detail.
+
+| Series | Crate | Spec suite |
+|---|---|---|
+| C | `cynepic-causal` | `tests/findings.rs` |
+| B | `cynepic-bayes` | `tests/calibration.rs` |
+| R | `cynepic-router` | `tests/routing_accuracy.rs` |
 
 ## How a finding moves
 
 ```
-confirmed  →  failing spec in tests/findings.rs, #[ignore]d  →  fix + delete
+confirmed  →  failing spec in the crate's suite, #[ignore]d  →  fix + delete
               the #[ignore] in the same PR  →  ratchet count drops
 ```
 
@@ -37,15 +53,145 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C12](#c12) | `dsep` | Unknown variables reported as d-separated | Critical | **Closed** |
 | [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
 | [C14](#c14) | `estimate::propensity` | IPW under-covers where weights are heavy | High | **OPEN** |
+| [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
+| [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** |
 
 ```
-open specs:   18   →   20   →   13   →   2
-            initial  measured  re-baselined  after Tier 1
+open specs:   18   →   20   →   13   →   2   →   5
+            initial  measured  re-baselined  Tier 1  + bayes & router measured
 ```
+
+The count rose at the last step because two more crates were measured for the
+first time. A ledger that only shrinks is a ledger that has stopped looking.
 
 Severity is about silence, not size. A defect that makes the crate panic is
 High. One that makes it return a confident, plausible, wrong number is Critical,
 because nothing downstream can detect it.
+
+---
+
+## <a id="r1"></a>R1 — the keyword classifier has no reach on natural phrasing · **OPEN**
+
+Measured against a 96-query corpus in `cynepic-testkit::corpus`, balanced 24 per
+domain across four verticals, and written **without reference to the
+classifier's keyword lists**. A corpus assembled by reading those lists would
+have scored well by construction and measured nothing.
+
+| domain | precision | recall | F1 |
+|---|---|---|---|
+| Clear | 0.833 | 0.417 | 0.556 |
+| Complicated | 1.000 | 0.083 | 0.154 |
+| Complex | 1.000 | 0.292 | 0.452 |
+| Chaotic | **0.000** | **0.000** | **0.000** |
+
+**accuracy 0.198, macro F1 0.290** — against a four-class random baseline of
+about 0.25.
+
+**Chaotic recall is zero.** All 24 live-incident queries are missed, because
+none of them happens to contain "emergency", "crisis", "outage", "breach",
+"urgent" or "critical failure". Answering "the site is down and we do not know
+why" from a cached lookup is the exact failure the Cynefin split exists to
+prevent, which makes this the highest-severity finding in the workspace despite
+being in the least statistically sophisticated crate.
+
+**The decomposition says what kind of problem it is:**
+
+```
+no keyword matched at all (-> Disorder):  75/96  (78%)
+matched, but the wrong domain:             2/96  ( 2%)
+```
+
+Those two failures call for opposite remedies, and only the second is a tuning
+problem. At 78% no-signal the approach has no *reach* on ordinary phrasing.
+**Editing the keyword lists against this corpus would overfit to it** and leave
+the next phrasing just as unreachable, so it has deliberately not been done —
+the number stands as the measurement of what a keyword matcher is worth here.
+
+**Fix.** The embedding classifier already on the roadmap. This finding is what
+turns that from a nice-to-have into a quantified requirement, and gives it a
+before number to be judged against.
+
+**What makes it survivable in the meantime.** The classifier abstains rather
+than guessing: no signal returns `Disorder` at zero confidence, and only 2% of
+queries are confidently misrouted. Mean entropy is 1.000 on ambiguous input
+against 0.781 on answerable input, so an escalation policy has a usable signal
+to trigger on. Those properties are asserted as regression guards and must not
+be traded away for a higher accuracy score — a confident wrong route is worse
+than an admitted unknown at every ratio.
+
+Specs: `r1_chaotic_queries_are_routed_to_chaotic`, `r1_macro_f1_is_usable`,
+`r1_most_queries_produce_signal`. Guards:
+`abstains_on_ambiguous_input_rather_than_guessing`,
+`confident_misrouting_stays_rare`, `precision_is_high_where_the_classifier_fires`,
+`entropy_separates_ambiguous_from_answerable`.
+
+### Fixed alongside it
+
+Scoring was `matches / keywords.len()`, so a single match against the
+four-keyword `Clear` list outscored a single match against the seven-keyword
+`Complicated` list, 0.25 to 0.14. List length is an authoring artifact and
+carries no evidence about the query. Now scored by matched query coverage, which
+also makes a specific phrase outrank a generic one.
+
+Worth recording: **fixing it did not move any headline number**, because the
+binding constraint is the 78% that match nothing at all, not the tie-breaking
+among the rest. A real bug that is not the cause of the symptom is still worth
+fixing, and worth reporting as not having helped.
+
+---
+
+## <a id="b1"></a>B1 — the Beta credible interval was a normal approximation · Closed
+
+`BetaBinomial::credible_interval_95` built `mean ± 1.96·sd` and clamped to
+`[0, 1]`. A Beta density is symmetric only when `alpha == beta`, so a symmetric
+interval is in the wrong place whenever the counts are unbalanced.
+
+**The hypothesis was wrong as first stated.** Measured *marginally* — averaging
+over draws from the prior — the interval is fine: 95.0% to 95.9% coverage across
+`n = 2` to `n = 200` and at both boundaries. Errors at low `p` cancel errors at
+high `p`.
+
+It is wrong *conditionally*, at fixed `p`, which is the question a reliability
+monitor actually asks: a tool has one real reliability, not a draw from a prior.
+But departures from 95% at fixed `p` are also just binomial discreteness, which
+no interval method escapes at small `n` — so the finding required a comparison
+against an exact interval on identical data, not against nominal:
+
+| p | shipped (before) | exact reference |
+|---|---|---|
+| 0.02 | 99.9% | 81.4% |
+| 0.05 | 98.9% | 91.2% |
+| 0.50 | **89.4%** | **97.8%** |
+| 0.95 | 98.8% | 91.3% |
+| 0.98 | 99.9% | 81.3% |
+
+Under-covering by 8.4 points at moderate `p` — the ordinary operating range —
+and over-covering at the boundaries where the symmetric interval overran
+`[0, 1]` and was clamped rather than corrected. Wrong in both directions, and
+the direction that mattered was the dangerous one.
+
+**Fixed** with `cynepic-bayes::special`: ln-gamma (Lanczos), regularised
+incomplete beta and gamma (Lentz continued fraction and series), quantiles by
+bisection. Bisection rather than Newton because a tool with 200 successes and no
+failures gives `Beta(201, 1)`, where the density occupies the last thousandth of
+the range and a Newton step leaves `[0, 1]`.
+
+`GammaPoisson` gained an interval it never had. A Gamma posterior is
+right-skewed at low counts, so adding a symmetric one would have repeated the
+mistake that had just been caught.
+
+Post-fix the shipped interval matches the reference to nine decimal places at
+every `p`, and the residual departures from 95% are identical in both columns —
+confirming they are discreteness, not implementation.
+
+The guard that catches a regression is not the coverage test, which must stay
+loose enough to tolerate discreteness. It is exact agreement with an
+independently written reference across a 6×6 grid of counts.
+
+Specs: `b1_shipped_interval_matches_the_exact_reference`,
+`b1_interval_is_in_range_without_clamping`,
+`b1_interval_is_asymmetric_when_the_posterior_is`,
+`b1_beta_binomial_intervals_are_calibrated_at_small_n`.
 
 ---
 

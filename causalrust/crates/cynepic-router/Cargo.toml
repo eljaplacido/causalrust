@@ -18,6 +18,8 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+# Labelled routing corpus for measured F1.
+cynepic-testkit = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
