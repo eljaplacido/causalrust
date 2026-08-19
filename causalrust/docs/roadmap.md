@@ -2,19 +2,47 @@
 
 ## Current State (v0.2.0-dev)
 
-~6,800 LOC across 6 crates, 99 tests, all layers implemented with solid coverage. CI configured, no bindings, no persistence, no HTTP API.
+**317 tests** across 10 crates. Five of six publishable crates have a validation
+harness capable of failing; four of them did. PyO3, MCP and HTTP surfaces exist
+and compile.
+
+| Crate | Status | Evidence |
+|---|---|---|
+| `cynepic-causal` | Measured | OLS nominal on 9/9 coverage cells; IPW nominal on 8/8 estimable |
+| `cynepic-bayes` | Calibrated | Exact conjugate intervals; both samplers pass simulation-based calibration |
+| `cynepic-guardian` | Property-tested | 15 guardrail properties |
+| `cynepic-graph` | Property-tested | 15 execution properties, no findings |
+| `cynepic-router` | Measured, weak | macro F1 0.290 vs a 0.25 random baseline |
+| `cynepic-core` | Types + `special` | Checked against closed forms |
+
+**The roadmap is subordinate to [FINDINGS.md](FINDINGS.md).** Two findings are
+open and both gate a 1.0:
+
+- **C14** — IPW/ATT intervals under-cover under strong confounding (ATT 89.3%).
+- **R1** — the keyword classifier has 0.000 recall on Chaotic; 78% of natural
+  phrasing matches no keyword. A reach problem, not a tuning one.
+
+Closing those matters more than anything below.
 
 ---
 
-## Phase 1: Hardening & CI (v0.2.0) — MOSTLY COMPLETE
+## Phase 1: Hardening & CI (v0.2.0) — COMPLETE
 
 ### 1.1 Build & CI
-- [x] GitHub Actions CI: build + test on ubuntu-latest
-- [x] Lint: clippy + rustfmt checks
-- [x] Feature matrix: test guardian with and without `rego`
-- [x] MSRV check on 1.85
+- [x] CI that actually runs. Every workflow from March to August failed in under
+      10 seconds on an action reference that does not resolve
+      (`dtolnay/rust-action`; it is `dtolnay/rust-toolchain`), so nothing had
+      ever been built or tested. 11 jobs now, gated behind one `ci-ok` check
+- [x] 3-OS x 2-toolchain test matrix (ubuntu, macOS, windows; stable and 1.85)
+- [x] Lint: fmt, clippy on both feature configurations, rustdoc link checking
+- [x] Feature powerset via `cargo hack`
+- [x] MSRV verified, and the manifest checked against the workflow's pin
+- [x] Supply chain: `cargo deny` over advisories, licences, bans, sources
+- [x] Findings ratchet across five suites
+- [x] `wasm32-wasip1` gated for core, causal, bayes
+- [x] Coverage, miri, and package verification (LICENSE + NOTICE in every tarball)
+- [x] `msvc_spectre_libs` no longer blocks Windows — the whole matrix is green
 - [ ] `rust-toolchain.toml` pinning MSRV
-- [ ] Resolve `msvc_spectre_libs` issue on Windows (nalgebra transitive dep)
 
 ### 1.2 Completed Implementations (was "stubs")
 - [x] `cynepic-causal`: Full OLS with covariate adjustment
@@ -41,32 +69,50 @@
 - [x] Test coverage: 99 tests across workspace
 
 ### 1.3 API Surface Polish
-- [ ] `#[must_use]` on all Result-returning functions
-- [ ] `deny(missing_docs)` lint for all crates
-- [ ] Per-crate CHANGELOG.md
+- [x] `Result`-returning API across `cynepic-causal`; no panics on caller input
+- [x] `[workspace.lints]` enforcing the stated conventions, with remaining debt
+      recorded as measured counts rather than omitted
+- [x] Provenance on every estimate: `Estimand`, `StdErrorKind`, `Diagnostics`,
+      with `ATEResult` unconstructible without them
+- [ ] `missing_docs = "deny"` — 86 violations, tracked in `[workspace.lints]`
+- [ ] Clear the panic-freedom debt set (`indexing_slicing` 104, `unwrap_used` 7,
+      `expect_used` 4)
+- [ ] `#[must_use]` on all `Result`-returning functions
 
 ---
 
-## Phase 2: Integration Interfaces (v0.3.0)
+## Phase 2: Integration Interfaces (v0.3.0) — IN PROGRESS
 
 **Goal:** Each crate is usable from Python, HTTP, and MCP.
 
-### 2.1 PyO3 Bindings (`bindings/python/`)
-- [ ] `cynepic-py` package wrapping all 6 crates
-- [ ] Priority: `cynepic-causal` (accelerate DoWhy bottlenecks)
-- [ ] Priority: `cynepic-bayes` (fast conjugate updates for Python ML pipelines)
-- [ ] `maturin` build system, publish to PyPI as `cynepic`
-- [ ] Numpy interop via `numpy` PyO3 crate (ndarray <-> numpy zero-copy)
+All three surfaces exist and compile. They were merged in a non-compiling state
+— 32 errors, written against an API that did not exist — and were fixed once CI
+could see them.
+
+### 2.1 PyO3 Bindings (`bindings/pyo3/`)
+- [x] `cynepic` module wrapping the core types, DAG, priors, circuit breaker
+- [x] `extension-module` as an opt-in feature, so `cargo build --workspace`
+      links on macOS; maturin turns it on
+- [ ] Full surface: estimators returning `Result` with the estimand attached
+- [ ] `maturin` release build, publish to PyPI as `cynepic`
+- [ ] NumPy interop (ndarray <-> numpy, ideally zero-copy)
 
 ### 2.2 HTTP API (`crates/cynepic-server/`)
-- [ ] Axum-based HTTP server exposing all crates as REST endpoints
-- [ ] OpenAPI spec generation via `utoipa`
+- [x] Axum server: classify, estimate, bayes update, policy evaluate
+- [x] Estimation errors map to 422 rather than 500 — they describe the caller's
+      data, not a service fault
+- [x] Responses carry the estimand, standard-error kind, interval and diagnostics
+- [ ] OpenAPI spec via `utoipa`
 - [ ] Docker image
+- [ ] Integration tests against a running server
 
-### 2.3 MCP Tool Server (`crates/cynepic-mcp/`)
-- [ ] MCP protocol implementation (JSON-RPC over stdio)
-- [ ] Tools: `classify_query`, `estimate_ate`, `update_belief`, `evaluate_policy`, `run_workflow`
-- [ ] Compatible with Claude Desktop, Cursor, VS Code MCP clients
+### 2.3 MCP Tool Server (`bindings/mcp/`)
+- [x] JSON-RPC 2.0 over stdio, with the version field actually validated
+- [x] Tools: `classify_domain`, `estimate_ate`, `check_policy`, `update_belief`,
+      `detect_loop`, `run_counterfactual`
+- [ ] `monitor_drift` — currently returns `not_implemented` with what it would
+      need. A monitor that always answers "no drift" is worse than an absent one
+- [ ] Verified against a real MCP client
 
 ### 2.4 WASM Target
 - [ ] `cynepic-core`, `cynepic-bayes`, `cynepic-causal` compilable to `wasm32-unknown-unknown`
