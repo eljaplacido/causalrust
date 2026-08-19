@@ -1,6 +1,24 @@
-# RALP Loop State — cynepic-rs Public Launch
+# RALP Loop State — cynepic-rs
 
-## Current Status: ITERATION 1 COMPLETE
+## Current Status: ITERATION 2 COMPLETE (PyO3 + MCP + Server)
+
+## Iteration 2 — 2026-05-24
+
+### Completed Fixes
+
+#### Security Hardening
+- [x] Converted `assert!` in `BetaBinomial::new`, `NormalNormal::new`, `DirichletMultinomial::new`, `GammaPoisson::new` to return `PriorResult<T>` with `PriorError`
+- [x] `DirichletMultinomial::uniform` returns `PriorResult<Self>` with validation
+- [x] `DirichletMultinomial::marginal_mean` / `marginal_variance` return `PriorResult<f64>` instead of panicking
+- [x] `DirichletMultinomial::update` returns `PriorResult<()>` with length validation
+- [x] `ToolBelief::with_prior` returns `PriorResult<Self>`
+- [x] `LoopDetector` history upgraded from `Vec<String>` to `VecDeque<String>` (O(1) pop_front)
+- [x] `AuditTrail` now has `recent_entries(limit)` and `with_entries(f)` to avoid full clone
+
+#### New Crates — Full Vertical Stack
+- [x] **`cynepic-pyo3`** (`bindings/pyo3/`) — PyO3 bindings: `CynefinDomain`, `CausalDag`, `BetaBinomial`, `CircuitBreaker`, `ToolBeliefSet`
+- [x] **`cynepic-mcp`** (`bindings/mcp/`) — MCP JSON-RPC stdio server: 8 cognitive tools (`classify_domain`, `estimate_ate`, `check_policy`, `update_belief`, `detect_loop`, `audit_trail`, `run_counterfactual`, `monitor_drift`)
+- [x] **`cynepic-server`** (`crates/cynepic-server/`) — Axum HTTP API: `GET /health`, `POST /router/classify`, `POST /causal/estimate`, `POST /bayesian/update`, `POST /guardian/evaluate`, `POST /graph/execute`
 
 ## Iteration 1 — 2026-03-15
 

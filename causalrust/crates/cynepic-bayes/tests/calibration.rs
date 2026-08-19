@@ -48,7 +48,7 @@ fn normal_normal_credible_intervals_are_calibrated() {
             .map(|_| theta + obs_var.sqrt() * sample_standard_normal(rng))
             .collect();
 
-        let mut model = NormalNormal::new(prior_mean, prior_var, obs_var);
+        let mut model = NormalNormal::new(prior_mean, prior_var, obs_var).expect("valid prior");
         model.update(&obs);
         let (lo, hi) = model.credible_interval_95();
         Some((theta, model.mean(), lo, hi))
@@ -79,9 +79,9 @@ fn gamma_poisson_posterior_mean_is_consistent() {
         let short: Vec<u64> = (0..5).map(|_| poisson(&mut rng, lambda)).collect();
         let long: Vec<u64> = (0..500).map(|_| poisson(&mut rng, lambda)).collect();
 
-        let mut a = GammaPoisson::new(3.0, 1.0);
+        let mut a = GammaPoisson::new(3.0, 1.0).expect("valid prior");
         a.update(&short);
-        let mut b = GammaPoisson::new(3.0, 1.0);
+        let mut b = GammaPoisson::new(3.0, 1.0).expect("valid prior");
         b.update(&long);
 
         small_error += (a.mean() - lambda).abs();
@@ -420,7 +420,7 @@ fn gamma_poisson_credible_intervals_are_calibrated() {
         let lambda = sample_gamma(rng, 3.0);
         let obs: Vec<u64> = (0..20).map(|_| poisson(rng, lambda)).collect();
 
-        let mut model = GammaPoisson::new(3.0, 1.0);
+        let mut model = GammaPoisson::new(3.0, 1.0).expect("valid prior");
         model.update(&obs);
         let (lo, hi) = model.credible_interval_95();
         Some((lambda, model.mean(), lo, hi))

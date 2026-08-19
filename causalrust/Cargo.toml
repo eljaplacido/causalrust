@@ -8,6 +8,9 @@ members = [
     "crates/cynepic-bayes",
     "crates/cynepic-graph",
     "crates/cynepic-testkit",
+    "crates/cynepic-server",
+    "bindings/pyo3",
+    "bindings/mcp",
 ]
 
 [workspace.package]

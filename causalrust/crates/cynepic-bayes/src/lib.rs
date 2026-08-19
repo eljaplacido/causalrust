@@ -11,14 +11,16 @@
 //! ```rust
 //! use cynepic_bayes::priors::BetaBinomial;
 //!
-//! // Start with a weak prior
-//! let mut model = BetaBinomial::new(1.0, 1.0);
+//! // Start with a weak prior. `new` is fallible: a non-positive alpha or beta
+//! // is not a Beta distribution, and returning one would be a lie.
+//! let mut model = BetaBinomial::new(1.0, 1.0)?;
 //!
 //! // Update with observations: 7 successes, 3 failures
 //! model.update(7, 3);
 //!
 //! // Posterior mean
 //! assert!((model.mean() - 0.6667).abs() < 0.01);
+//! # Ok::<(), cynepic_bayes::priors::PriorError>(())
 //! ```
 
 pub mod belief;
@@ -33,3 +35,11 @@ pub mod sampler;
 pub use cynepic_core::special;
 pub mod streaming;
 pub mod tool_belief;
+
+// Convenience re-exports, matching the pattern every other crate in the
+// workspace follows. Their absence is why the PyO3 bindings referenced
+// `cynepic_bayes::BetaBinomial` and did not compile.
+pub use belief::BeliefState;
+pub use priors::{BetaBinomial, DirichletMultinomial, GammaPoisson, NormalNormal, PriorError};
+pub use sampler::{AdaptiveMH, MetropolisHastings, MultiDimMH, SamplerResult};
+pub use tool_belief::{ToolBelief, ToolBeliefSet};

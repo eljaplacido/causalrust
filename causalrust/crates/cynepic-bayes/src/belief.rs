@@ -23,25 +23,26 @@ impl BeliefState {
     /// Get the current posterior mean.
     ///
     /// For `Categorical`, returns the mean of the first category.
-    /// Use the inner `DirichletMultinomial` directly for full vector means.
+    /// Returns `f64::NAN` on category index out of bounds.
     pub fn mean(&self) -> f64 {
         match self {
             BeliefState::Binary(m) => m.mean(),
             BeliefState::Continuous(m) => m.mean(),
             BeliefState::Count(m) => m.mean(),
-            BeliefState::Categorical(m) => m.marginal_mean(0),
+            BeliefState::Categorical(m) => m.marginal_mean(0).unwrap_or(f64::NAN),
         }
     }
 
     /// Get the current posterior variance.
     ///
     /// For `Categorical`, returns the marginal variance of the first category.
+    /// Returns `f64::NAN` on category index out of bounds.
     pub fn variance(&self) -> f64 {
         match self {
             BeliefState::Binary(m) => m.variance(),
             BeliefState::Continuous(m) => m.variance(),
             BeliefState::Count(m) => m.variance(),
-            BeliefState::Categorical(m) => m.marginal_variance(0),
+            BeliefState::Categorical(m) => m.marginal_variance(0).unwrap_or(f64::NAN),
         }
     }
 
@@ -57,8 +58,8 @@ impl BeliefState {
                 (m.mean() - 1.96 * std, m.mean() + 1.96 * std)
             }
             BeliefState::Categorical(m) => {
-                let mean = m.marginal_mean(0);
-                let std = m.marginal_variance(0).sqrt();
+                let mean = m.marginal_mean(0).unwrap_or(0.5);
+                let std = m.marginal_variance(0).unwrap_or(0.25).sqrt();
                 ((mean - 1.96 * std).max(0.0), (mean + 1.96 * std).min(1.0))
             }
         }
@@ -71,7 +72,7 @@ mod tests {
 
     #[test]
     fn belief_state_binary() {
-        let state = BeliefState::Binary(BetaBinomial::new(10.0, 10.0));
+        let state = BeliefState::Binary(BetaBinomial::new(10.0, 10.0).unwrap());
         assert!((state.mean() - 0.5).abs() < 1e-10);
     }
 }

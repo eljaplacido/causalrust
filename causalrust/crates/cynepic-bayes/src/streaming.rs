@@ -92,7 +92,7 @@ impl BeliefTracker {
                 model.update(&counts);
             }
             (BeliefState::Categorical(model), Observation::Categorical { counts }) => {
-                model.update(counts);
+                _ = model.update(counts);
             }
             (state, obs) => {
                 let expected = match state {
@@ -189,8 +189,9 @@ mod tests {
 
     #[test]
     fn batch_continuous_updates() {
-        let mut tracker =
-            BeliefTracker::new(BeliefState::Continuous(NormalNormal::new(0.0, 100.0, 1.0)));
+        let mut tracker = BeliefTracker::new(BeliefState::Continuous(
+            NormalNormal::new(0.0, 100.0, 1.0).unwrap(),
+        ));
 
         let observations = vec![
             Observation::Continuous { value: 5.0 },

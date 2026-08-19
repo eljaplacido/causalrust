@@ -40,7 +40,7 @@ fn main() {
         let obs: Vec<f64> = (0..10)
             .map(|_| theta + sample_standard_normal(rng))
             .collect();
-        let mut model = NormalNormal::new(0.0, 1.0, 1.0);
+        let mut model = NormalNormal::new(0.0, 1.0, 1.0).expect("valid prior");
         model.update(&obs);
         let (lo, hi) = model.credible_interval_95();
         Some((theta, model.mean(), lo, hi))
@@ -79,7 +79,7 @@ fn main() {
             let p = sample_beta(rng, a, b);
             let n = 10u64;
             let successes = (0..n).filter(|_| rng.random::<f64>() < p).count() as u64;
-            let mut model = BetaBinomial::new(a, b);
+            let mut model = BetaBinomial::new(a, b).expect("valid prior");
             model.update(successes, n - successes);
             let (lo, hi) = model.credible_interval_95();
             Some((p, model.mean(), lo, hi))

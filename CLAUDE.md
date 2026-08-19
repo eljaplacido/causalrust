@@ -31,6 +31,10 @@ causalrust/                    # Git root
 │   │   │   └── benches/samplers.rs       # Time per EFFECTIVE sample, not per draw
 │   │   ├── cynepic-graph/     # StateGraph<S> workflow orchestration
 │   │   └── cynepic-testkit/   # Ground-truth DGPs + coverage harness (publish=false)
+│   │   └── cynepic-server/    # Axum HTTP API over the crates
+│   ├── bindings/
+│   │   ├── pyo3/              # Python extension module
+│   │   └── mcp/               # MCP server (JSON-RPC 2.0 over stdio)
 │   ├── scripts/
 │   │   └── findings-ratchet.sh  # CI gate: open findings count down only
 │   ├── EXPERIMENTS.md         # Quick-start examples
@@ -40,9 +44,9 @@ causalrust/                    # Git root
 │       ├── architecture.md    # Architecture overview
 │       ├── integration.md     # Interop guide (Python, TS, Java, MCP)
 │       ├── roadmap.md         # Completion roadmap with phases
-│       ├── CRATE_GUIDE.md     # Per-crate public API guide
-│       ├── WORKFLOWS.md       # Workflow integration patterns
-│       └── PITCH.md           # Positioning summary
+│       ├── CRATE_GUIDE.md     # Per-crate developer guide
+│       ├── WORKFLOWS.md       # Real-world workflow patterns
+│       └── PITCH.md           # Positioning and value proposition
 ```
 
 ## Build & Test
@@ -97,16 +101,12 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `AnalyticalEngine` | core | Async trait for domain-specific analysis |
 | `PolicyDecision` | core | Approve / Reject { reason } / Escalate { target } |
 | `AuditEntry` | core | Append-only audit record (UUID, timestamp, decision) |
-| `EpistemicState` | core | Unified session provenance (domain, confidence, reasoning chain) |
-| `ConfidenceLevel` | core | Discretized confidence: High / Medium / Low / Unknown |
-| `ReasoningStep` | core | Single step in the epistemic reasoning chain |
 | `CircuitBreaker` | guardian | State machine: Closed → Open → HalfOpen |
 | `PolicyChain` | guardian | Sequential evaluator chain, short-circuits on reject |
 | `LoopDetector` | guardian | Detects node overvisits and alternation thrashing |
 | `RiskAwareEvaluator` | guardian | Bayesian risk score → approve/escalate/reject |
 | `RateLimiter` | guardian | Token-bucket rate limiting per action/actor |
 | `EscalationManager` | guardian | HITL escalation lifecycle (pending/approved/rejected/timed-out) |
-| `BiasAuditor` | guardian | Chi-squared fairness testing on decision distributions |
 | `CausalDag` | causal | petgraph-backed DAG with parent/child queries |
 | `d_separated` | causal | Bayes-Ball d-separation test on DAG |
 | `BackdoorCriterion` | causal | Finds valid adjustment sets for causal identification |
@@ -115,8 +115,6 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `PropensityScoreEstimator` | causal | IPW estimation via logistic regression |
 | `IVEstimator` | causal | Two-stage least squares (2SLS) |
 | `ATEResult` | causal | Average Treatment Effect + standard error |
-| `CounterfactualEngine` | causal | Level-3 counterfactual queries (Pearl's ladder) |
-| `CounterfactualQuery` | causal | "What would Y be if T had been t'?" |
 | `BetaBinomial` | bayes | Conjugate prior for binary outcomes |
 | `DirichletMultinomial` | bayes | Conjugate prior for categorical data |
 | `MetropolisHastings` | bayes | 1D MCMC sampler for arbitrary log-densities |
@@ -128,7 +126,6 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `CynefinRouter` | router | Classifier → domain → route target (budget-aware) |
 | `BudgetTracker` | router | Cost tracking with tier-based budget enforcement |
 | `ClassifierMetrics` | router | Confusion matrix, precision/recall/F1, misrouting cost |
-| `DriftDetector` | router | KL-divergence routing distribution drift monitoring |
 | `StateGraph<S>` | graph | Typed async workflow graph with conditional edges |
 | `Checkpoint<S>` | graph | Serializable execution snapshot for pause/resume |
 | `GraphHook` | graph | Event hook trait for observability (NodeStarted/Completed/Failed) |
@@ -223,6 +220,10 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
   in CI. `wasm32-unknown-unknown` (browser) builds for nothing yet — `uuid` and
   `rand 0.8` both need a `getrandom` JS backend. guardian/graph/router pull
   `tokio = { features = ["full"] }`, which targets no wasm at all.
+- **Performance claims in `causalrust/README.md` and `docs/PITCH.md` are
+  UNVERIFIED design targets.** They cite a `benchmarks/` directory that does not
+  exist. `benches/` does not compare against NetworkX/PyMC/OPA/LangGraph. They
+  are flagged in place; do not quote them.
 - **Not published.** Crates are not on crates.io, so `cargo-semver-checks` has
   no baseline and is deliberately absent from CI until the first publish.
 
