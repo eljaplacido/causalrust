@@ -190,3 +190,25 @@ let result = graph.execute(-5, 10).await.unwrap(); // 10
 Relicensed from BSL 1.1 on 2026-08-17. The BSL already named Apache-2.0 as its Change License for 2030-03-13; that date was brought forward.
 
 See [NOTICE](NOTICE) for trademark attribution — "CARF" and "CYNEPIC" remain trademarks of Cisuregen, and Apache-2.0 §6 grants no trademark rights.
+
+---
+
+## Contributing
+
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — the workflow, the full local gate,
+  and the findings ratchet.
+- **[docs/FINDINGS.md](causalrust/docs/FINDINGS.md)** — every known correctness
+  defect, with the measurement behind it. Start here.
+- **[SECURITY.md](SECURITY.md)** — report vulnerabilities privately.
+- **[CHANGELOG.md](CHANGELOG.md)** — what changed and what it measured.
+- **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)**
+
+The one thing worth knowing before you start: **a claim without a measurement is
+not a claim.** Statistical changes need a coverage or calibration number, not a
+unit test with a generous tolerance. That standard exists because thirty passing
+unit tests once coexisted with an estimator at 0.0% interval coverage.
+
+## Licence
+
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) — Apache-2.0 grants no trademark
+rights, and the CARF/CYNEPIC marks are reserved.

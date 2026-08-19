@@ -1,0 +1,82 @@
+name: Correctness finding
+description: A number that is wrong, or an interval that does not deliver the confidence it claims
+labels: ["correctness", "finding"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for the defect class this project cares most about: code
+        that returns a **plausible, confident, wrong** answer rather than failing.
+
+        Please check [docs/FINDINGS.md](https://github.com/eljaplacido/causalrust/blob/main/causalrust/docs/FINDINGS.md)
+        first — it lists every known defect with its measurement.
+
+        If the defect is triggerable by attacker- or user-controlled input,
+        report it privately instead: see
+        [SECURITY.md](https://github.com/eljaplacido/causalrust/blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Crate
+      options:
+        - cynepic-causal
+        - cynepic-bayes
+        - cynepic-router
+        - cynepic-guardian
+        - cynepic-graph
+        - cynepic-core
+        - cynepic-server / bindings
+    validations: { required: true }
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong
+      description: The output you get and the output you expect.
+    validations: { required: true }
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: The measurement
+      description: |
+        What did you measure, and what did it say? Coverage, bias, calibration,
+        an F1 — whatever the right instrument is.
+
+        The most useful report shows the defect against a **reference**: an
+        exact computation, an oracle, or a known-correct implementation on the
+        same data. Departure from a nominal value alone is often explained by
+        something else — binomial discreteness at small n, for instance — and a
+        reference is what separates "this is wrong" from "everything behaves
+        this way here".
+      placeholder: |
+        e.g. 300 replications, n=2000, seed 0..299:
+          reported coverage   87.3%
+          exact reference     97.8%
+          bias                +0.033
+    validations: { required: true }
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Ideally a failing test. Include the seed — everything here is seeded.
+      render: rust
+    validations: { required: true }
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations: { required: true }
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked docs/FINDINGS.md and this is not already listed
+          required: true
+        - label: This is not triggerable by untrusted input (otherwise use SECURITY.md)
+          required: true

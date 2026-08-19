@@ -1,0 +1,48 @@
+name: Bug report
+description: A crash, a compile failure, or behaviour that does not match the docs
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a *wrong number* rather than a crash, please use the
+        **Correctness finding** template instead — it asks the right questions.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations: { required: true }
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations: { required: true }
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      render: rust
+    validations: { required: true }
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations: { required: true }
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Linux, macOS, Windows, wasm32-wasip1, Other]
+    validations: { required: true }
+
+  - type: input
+    id: rustc
+    attributes:
+      label: rustc version
+      description: "`rustc --version`. MSRV is 1.85."
+    validations: { required: true }

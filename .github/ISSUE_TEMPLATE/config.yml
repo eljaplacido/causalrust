@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/eljaplacido/causalrust/security/advisories/new
+    about: Report privately. Do not open a public issue — see SECURITY.md.
+  - name: Known issues and measurements
+    url: https://github.com/eljaplacido/causalrust/blob/main/causalrust/docs/FINDINGS.md
+    about: Every known correctness defect, with the measurement behind it. Check here first.
