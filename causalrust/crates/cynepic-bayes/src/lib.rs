@@ -24,6 +24,12 @@
 pub mod belief;
 pub mod priors;
 pub mod sampler;
-pub mod special;
+
+/// Special functions used for exact posterior quantiles.
+///
+/// Lives in `cynepic-core` because `cynepic-causal` needs the same incomplete
+/// beta for its t-distribution quantiles, and duplicating a numerical routine
+/// in two crates means a bug fixed in one and not the other.
+pub use cynepic_core::special;
 pub mod streaming;
 pub mod tool_belief;

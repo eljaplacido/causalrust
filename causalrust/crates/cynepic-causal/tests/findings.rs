@@ -848,7 +848,7 @@ fn metamorphic_unit_order_does_not_matter() {
 /// cross-fitted projection, or a bootstrap that refits the propensity model in
 /// each resample and so captures both effects at once.
 #[test]
-#[ignore = "C14: IPW SE understated ~9% under strong confounding; coverage 87.3% vs nominal 95%"]
+#[ignore = "C14: IPW coverage 90.3% vs nominal 95% under strong confounding, narrowed from 87.3%"]
 fn c14_ipw_coverage_is_nominal_under_strong_confounding() {
     let dgp = Dgp::new().with_n(2_000).with_confounding(3.0);
 
@@ -864,8 +864,11 @@ fn c14_ipw_coverage_is_nominal_under_strong_confounding() {
         },
     );
 
+    // A 3-point bar, not 5. Monte Carlo standard error at 300 replications is
+    // about 1.2 points, so 3 points is a real requirement rather than noise,
+    // and 5 would now be satisfied by the partial fix.
     assert!(
-        report.coverage_ok(0.05),
+        report.coverage_ok(0.03),
         "IPW under-covers under strong confounding — {}",
         report.summary()
     );
@@ -873,7 +876,7 @@ fn c14_ipw_coverage_is_nominal_under_strong_confounding() {
 
 /// The same for the ATT estimator, which shares the weighting machinery.
 #[test]
-#[ignore = "C14: ATT SE understated under strong confounding; coverage 86.7% vs nominal 95%"]
+#[ignore = "C14: ATT coverage below nominal under strong confounding"]
 fn c14_att_coverage_is_nominal_under_strong_confounding() {
     let dgp = Dgp::new().with_n(2_000).with_confounding(3.0);
 
@@ -890,8 +893,76 @@ fn c14_att_coverage_is_nominal_under_strong_confounding() {
     );
 
     assert!(
-        report.coverage_ok(0.05),
+        report.coverage_ok(0.03),
         "ATT under-covers under strong confounding — {}",
         report.summary()
+    );
+}
+
+/// The bootstrap estimator must agree with the analytic one on the point
+/// estimate, and must report itself as a bootstrap.
+///
+/// Added while investigating C14. It is a guard, not a fix: measurement showed
+/// the bootstrap interval is *narrower* than the analytic one exactly where the
+/// analytic one was already too narrow, because resampling cannot reproduce a
+/// tail event absent from the original sample. That is recorded so the option
+/// is not mistaken for the remedy.
+#[test]
+fn ipw_bootstrap_agrees_on_the_point_estimate_and_labels_itself() {
+    let d = Dgp::new().with_n(800).sample(41);
+
+    let analytic = PropensityScoreEstimator::ipw(&d.treatment, &d.outcome, &d.covariates)
+        .expect("benign DGP has overlap");
+    let boot =
+        PropensityScoreEstimator::ipw_bootstrap(&d.treatment, &d.outcome, &d.covariates, 60, 7)
+            .expect("benign DGP has overlap");
+
+    assert!(
+        (analytic.ate() - boot.ate()).abs() < 1e-12,
+        "the bootstrap must not re-centre the estimate: {} vs {}",
+        analytic.ate(),
+        boot.ate()
+    );
+    assert_eq!(boot.std_error_kind(), StdErrorKind::Bootstrap);
+    assert!(boot.std_error() > 0.0 && boot.std_error().is_finite());
+    // Degrees of freedom come from the resample count, not the sample size.
+    assert_eq!(boot.diagnostics().variance_dof, Some(59.0));
+}
+
+/// A noisy variance estimate must widen the interval.
+///
+/// The mechanism behind C14's partial fix, asserted directly. When the
+/// estimator reports few effective degrees of freedom for its variance, the
+/// interval must use a Student-t quantile rather than a normal one — that is
+/// what Student's t is for, and it applies to a weighted estimator dominated by
+/// a few large weights as much as to a small sample.
+#[test]
+fn few_variance_degrees_of_freedom_widen_the_interval() {
+    // Heavy weights: strong confounding drives the effective dof down.
+    let heavy = Dgp::new().with_n(2_000).with_confounding(3.0).sample(43);
+    let benign = Dgp::new().with_n(2_000).sample(43);
+
+    let r_heavy =
+        PropensityScoreEstimator::ipw(&heavy.treatment, &heavy.outcome, &heavy.covariates)
+            .expect("has overlap");
+    let r_benign =
+        PropensityScoreEstimator::ipw(&benign.treatment, &benign.outcome, &benign.covariates)
+            .expect("has overlap");
+
+    let dof_heavy = r_heavy.diagnostics().variance_dof.expect("reported");
+    let dof_benign = r_benign.diagnostics().variance_dof.expect("reported");
+
+    assert!(
+        dof_heavy < dof_benign,
+        "heavy weights must yield fewer effective degrees of freedom: \
+         {dof_heavy:.1} vs {dof_benign:.1}"
+    );
+
+    // And the widening must actually reach the interval.
+    let (lo, hi) = r_heavy.confidence_interval(0.95).expect("finite se");
+    let normal_width = 2.0 * 1.959_963_985 * r_heavy.std_error();
+    assert!(
+        (hi - lo) > normal_width,
+        "the interval is no wider than a normal one despite {dof_heavy:.1} dof"
     );
 }

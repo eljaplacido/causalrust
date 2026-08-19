@@ -3,8 +3,9 @@
 > **Status: twelve findings closed, two open, across three measured crates.**
 >
 > - `cynepic-causal` — `ols_adjusted` is nominal on all nine grid cells; IPW is
->   nominal on seven of eight estimable cells and **under-covers by ~8 points
->   under strong confounding** ([C14](#c14), open).
+>   nominal on eight of eight estimable cells within five points, and
+>   **under-covers by ~5 points under strong confounding** ([C14](#c14), open
+>   and narrowed from ~8).
 > - `cynepic-bayes` — every conjugate interval is calibrated and both samplers
 >   pass simulation-based calibration ([B1](#b1), closed).
 > - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
@@ -56,7 +57,7 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C11](#c11) | `dag` | `CausalDag` did not enforce acyclicity | Critical | **Closed** |
 | [C12](#c12) | `dsep` | Unknown variables reported as d-separated | Critical | **Closed** |
 | [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
-| [C14](#c14) | `estimate::propensity` | IPW under-covers where weights are heavy | High | **OPEN** |
+| [C14](#c14) | `estimate::propensity` | IPW under-covers where weights are heavy | High | **OPEN** (narrowed) |
 | [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
 | [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** |
 | [G1](#g1) | `guardian::circuit_breaker` | No half-open state; whole load restored on a timer | **Critical** | **Closed** |
@@ -244,44 +245,106 @@ Specs: `b1_shipped_interval_matches_the_exact_reference`,
 
 ---
 
-## <a id="c14"></a>C14 — IPW under-covers where the weights are heavy · **OPEN**
+## <a id="c14"></a>C14 — IPW under-covers where the weights are heavy · **OPEN, narrowed**
 
-**This finding was created by the fix for C5.** It is filed rather than tuned
-away because under-coverage is the dangerous direction: an interval that lies
-about its own confidence.
+Coverage at strong confounding: **87.3% → 90.3%** after a partial fix. Still
+below nominal, so still open, but the mechanism is now identified and four
+hypotheses have been ruled out by measurement rather than argument.
 
-Correcting IPW's variance for the propensity being *estimated* rather than known
-is the right adjustment — the influence function is projected off the propensity
-model's score, since estimation error in `e` partly cancels estimation error in
-the effect. Before the correction IPW over-covered at 100% with intervals about
-three times wider than necessary. After it:
+### What it is not
 
-| cell | bias | Monte Carlo sd | reported SE | coverage |
-|---|---|---|---|---|
-| benign | −0.0006 | 0.049 | 0.050 | 94.7% |
-| strong-confounding | +0.0331 | 0.161 | 0.147 | **87.3%** |
-| moderate-overlap | +0.0170 | 0.151 | 0.141 | 92.3% |
+The original entry named two plausible mechanisms. **Both were wrong**, and so
+was the candidate fix. Measured at 400 replications, `n = 2000`:
 
-The point estimate is sound everywhere — bias is under 0.04. The standard error
-is understated by roughly 9% at strong confounding. Two mechanisms are plausible
-and not yet separated:
+| diagnostic | benign | strong-confounding |
+|---|---|---|
+| coverage, reported SE | 95.8% | **87.2%** |
+| coverage, **oracle** SE (the true Monte Carlo sd) | 96.0% | **96.0%** |
+| coverage, constant mean SE | 95.5% | 93.8% |
+| mean reported SE / true sd | 0.973 | 0.946 |
+| skewness / kurtosis of the estimate | −0.13 / 2.63 | −0.47 / 2.83 |
+| **coefficient of variation of the reported SE** | **0.05** | **0.26** |
 
-1. The projection coefficient is estimated **in-sample**, so it removes some
-   variation that is genuinely sampling noise rather than nuisance-estimation
-   error. Cross-fitting would address this.
-2. At `confounding = 3.0` the weight distribution is heavy-tailed enough that a
-   symmetric normal interval is the wrong *shape*, independent of its width.
+Ruled out:
 
-**Fix.** A cross-fitted projection, or a bootstrap that refits the propensity
-model inside each resample and so captures both mechanisms at once. The
-bootstrap machinery already exists in `refute::Refuter::bootstrap`.
+- **Interval shape.** Oracle-SE coverage is 96.0%. A symmetric normal interval
+  is fine here; skewness is mild and kurtosis is under 3.
+- **Bias.** +0.033 against a sd of 0.152, and the oracle column carries that
+  bias while still covering at 96%.
+- **SE magnitude.** The mean reported SE is 5.4% low. That alone moves coverage
+  by about two points, not eight.
+- **In-sample overfit of the projection.** With `k = 4` and `n = 2000` this
+  removes about 0.2% of the variance. Three orders of magnitude too small.
+
+### What it is
+
+**The standard error is not biased, it is noisy.** A coefficient of variation of
+0.26 implies the variance estimate carries roughly `1/(2·cv²) ≈ 7.5` effective
+degrees of freedom despite `n = 2000`, because with heavy weights a handful of
+influence contributions dominate the sum of squares.
+
+A noisy variance estimate is exactly what Student's t exists for. The
+decomposition:
+
+```
+coverage with the noisy reported SE      87.2%
+coverage with its mean held constant     93.8%   <- 6.6 points from NOISE
+coverage with the oracle SE              96.0%   <- 2.2 more from magnitude
+```
+
+### The partial fix
+
+`Diagnostics::variance_dof` now carries a Satterthwaite estimate of the
+variance's effective degrees of freedom, and `confidence_interval` uses a
+Student-t quantile when it is present. Coverage at strong confounding rises to
+**90.3%**, and every cell of the grid is now within five points of nominal.
+
+The gap that remains is that Satterthwaite recovers only **23** of the 7.5
+degrees of freedom the observed noise implies. It is computed from the influence
+contributions alone, so it sees the heavy-tail source of noise and not the
+second source: the propensity model was itself estimated from the same data.
+
+### The candidate fix, measured and rejected
+
+The obvious remedy for the second source is a bootstrap that refits the
+propensity model inside every replicate. `PropensityScoreEstimator::ipw_bootstrap`
+does exactly that, and **it makes coverage worse**:
+
+| cell | analytic (t) | bootstrap |
+|---|---|---|
+| benign | 94.5%, w=0.195 | 96.5%, w=0.198 |
+| moderate-overlap | 93.0%, w=0.623 | 93.0%, w=0.557 |
+| strong-confounding | **92.5%**, w=0.654 | **89.5%**, w=0.581 |
+
+The bootstrap interval is *narrower* precisely where the analytic one was
+already too narrow. This is a known limitation rather than a defect: a
+nonparametric bootstrap resamples the units it was given, so it cannot reproduce
+a tail event that did not occur in the original sample — and with heavy weights,
+the variance lives in those tails.
+
+`ipw_bootstrap` is kept as a capability, documented with this result so it is not
+mistaken for the remedy.
+
+### What is left
+
+Recovering the remaining degrees of freedom requires accounting for the
+propensity model's estimation error in the *variance of the variance*, not just
+in the variance. Candidates not yet tried: a cross-fitted (sample-split)
+projection, or an analytic second-order expansion of the sandwich.
+
+The specs are now held to a **3-point** bar rather than 5. Monte Carlo standard
+error at 300 replications is about 1.2 points, so 3 is a real requirement, and 5
+would now be satisfied by the partial fix.
+
+**Until it closes**, prefer `ols_adjusted` when the outcome model is plausibly
+linear — it is nominal on every cell — and read `Diagnostics::variance_dof`
+before trusting an IPW interval. A value in the tens rather than the hundreds is
+the signal that the interval is resting on very few effective observations.
 
 Specs: `c14_ipw_coverage_is_nominal_under_strong_confounding`,
-`c14_att_coverage_is_nominal_under_strong_confounding`.
-
-**Until it is fixed**, prefer `ols_adjusted` when the outcome model is plausibly
-linear — it is nominal on every cell — and read `Diagnostics::effective_n` and
-`propensity_range` before trusting an IPW interval on strongly confounded data.
+`c14_att_coverage_is_nominal_under_strong_confounding`. Guards:
+`few_variance_degrees_of_freedom_widen_the_interval`,
+`ipw_bootstrap_agrees_on_the_point_estimate_and_labels_itself`.
 
 ---
 

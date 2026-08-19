@@ -1,19 +1,27 @@
-//! Special functions needed for exact posterior quantiles.
+//! Special functions: log-gamma, incomplete beta and gamma, and the quantiles
+//! built on them.
 //!
-//! # Why this exists rather than a dependency
+//! # Why they live in `core`
 //!
-//! `statrs` is already in the workspace and provides all of this. It is not used
-//! here because `cynepic-bayes` is one of the crates gated on `wasm32-wasip1` in
-//! CI, and `statrs` pulls `nalgebra`, which is both large and a recurring source
-//! of platform trouble (it is the reason this workspace cannot be built on
-//! Windows MSVC without Spectre-mitigated libraries). Three hundred lines of
-//! well-tested numerics is a better trade than a transitive linear-algebra
-//! stack for two functions.
+//! `cynepic-bayes` needs the Beta and Gamma quantiles for exact posterior
+//! intervals. `cynepic-causal` needs the Student-t quantile — which is the
+//! incomplete beta in disguise — for intervals whose variance estimate is
+//! itself noisy. Duplicating a numerical routine across two crates means a bug
+//! fixed in one and not the other, so it belongs in the crate they both already
+//! depend on.
+//!
+//! # Why not `statrs`
+//!
+//! It is already in the workspace and provides all of this. But it pulls
+//! `nalgebra`, which is large and a recurring source of platform trouble — it is
+//! the reason this workspace cannot be built on Windows MSVC without
+//! Spectre-mitigated libraries. `core` is also gated on `wasm32-wasip1` in CI,
+//! where every avoided dependency is one less thing to port. Three hundred lines
+//! of tested numerics is the better trade.
 //!
 //! Everything here is checked against closed forms — `Beta(1,1)` is uniform,
-//! `Beta(3,1)` has CDF `x^3`, `Beta(1,3)` has CDF `1-(1-x)^3` — and
-//! cross-checked against `cynepic-testkit`'s independently written reference in
-//! the calibration suite.
+//! `Beta(3,1)` has CDF `x^3`, `Gamma(1, r)` is `Exponential(r)` — and
+//! cross-checked against `cynepic-testkit`'s independently written reference.
 
 /// Log-gamma via the Lanczos approximation (g = 7, n = 9).
 ///
@@ -239,9 +247,149 @@ pub fn gamma_cdf(x: f64, shape: f64, rate: f64) -> f64 {
     }
 }
 
+/// CDF of Student's t with `dof` degrees of freedom.
+///
+/// Expressed through the regularised incomplete beta:
+/// `P(T <= t) = 1 - I_x(dof/2, 1/2) / 2` for `t > 0`, with
+/// `x = dof / (dof + t^2)`.
+pub fn t_cdf(t: f64, dof: f64) -> f64 {
+    if dof <= 0.0 || t.is_nan() {
+        return f64::NAN;
+    }
+    if t == 0.0 {
+        return 0.5;
+    }
+    let x = dof / (dof + t * t);
+    let tail = 0.5 * beta_cdf(x, dof / 2.0, 0.5);
+    if t > 0.0 { 1.0 - tail } else { tail }
+}
+
+/// Quantile of Student's t with `dof` degrees of freedom.
+///
+/// Used where a variance estimate is itself noisy. A normal quantile assumes the
+/// standard error is known; when it is estimated from a handful of effective
+/// observations, the studentised statistic has heavier tails than a normal and a
+/// normal interval under-covers. That is the entire reason Student's t exists,
+/// and it applies to weighted estimators whose variance is dominated by a few
+/// large weights just as much as it does to a small sample.
+///
+/// Converges to the normal quantile as `dof` grows, so it is safe to use
+/// unconditionally.
+pub fn t_quantile(p: f64, dof: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) || dof <= 0.0 {
+        return f64::NAN;
+    }
+    if p <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if p >= 1.0 {
+        return f64::INFINITY;
+    }
+    if (p - 0.5).abs() < f64::EPSILON {
+        return 0.0;
+    }
+
+    // Symmetric, so solve on the upper half and reflect.
+    let upper = p > 0.5;
+    let target = if upper { p } else { 1.0 - p };
+
+    // Bracket. The t quantile exceeds the normal one, and grows without bound as
+    // dof falls, so the bracket is found by doubling rather than assumed.
+    let mut hi = 2.0_f64;
+    let mut guard = 0;
+    while t_cdf(hi, dof) < target && guard < 200 {
+        hi *= 2.0;
+        guard += 1;
+    }
+
+    let mut lo = 0.0_f64;
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if t_cdf(mid, dof) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let q = 0.5 * (lo + hi);
+    if upper { q } else { -q }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn t_cdf_is_symmetric() {
+        for dof in [1.0, 5.0, 30.0, 1_000.0] {
+            for t in [0.5, 1.0, 2.0, 3.0] {
+                let a = t_cdf(t, dof);
+                let b = t_cdf(-t, dof);
+                assert!((a + b - 1.0).abs() < 1e-9, "dof {dof}, t {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn t_quantile_matches_tabulated_values() {
+        // Standard two-sided 95% critical values.
+        let cases = [
+            (1.0, 12.706),
+            (2.0, 4.303),
+            (5.0, 2.571),
+            (7.0, 2.365),
+            (10.0, 2.228),
+            (30.0, 2.042),
+            (100.0, 1.984),
+        ];
+        for (dof, expected) in cases {
+            let q = t_quantile(0.975, dof);
+            assert!(
+                (q - expected).abs() < 0.002,
+                "t({dof}, 0.975) = {q}, tabulated {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn t_quantile_converges_to_the_normal() {
+        // At large dof the t quantile must approach 1.959964.
+        let q = t_quantile(0.975, 1e6);
+        assert!((q - 1.959_963_985).abs() < 1e-3, "got {q}");
+    }
+
+    #[test]
+    fn t_quantile_is_always_at_least_the_normal_quantile() {
+        // The property that makes it safe to use unconditionally: a t interval
+        // is never narrower than the corresponding normal one.
+        for dof in [1.0, 3.0, 7.0, 25.0, 200.0, 10_000.0] {
+            assert!(
+                t_quantile(0.975, dof) >= 1.959_963_9,
+                "t({dof}) was narrower than the normal quantile"
+            );
+        }
+    }
+
+    #[test]
+    fn t_quantile_inverts_the_cdf() {
+        for dof in [2.0, 8.0, 50.0] {
+            for p in [0.01, 0.25, 0.75, 0.99] {
+                let q = t_quantile(p, dof);
+                assert!((t_cdf(q, dof) - p).abs() < 1e-8, "dof {dof}, p {p}");
+            }
+        }
+    }
+
+    #[test]
+    fn t_quantile_is_monotone_in_dof() {
+        // Fewer degrees of freedom means heavier tails means a wider interval.
+        let mut previous = f64::INFINITY;
+        for dof in [1.0, 2.0, 5.0, 10.0, 50.0, 500.0] {
+            let q = t_quantile(0.975, dof);
+            assert!(q < previous, "not monotone at dof {dof}");
+            previous = q;
+        }
+    }
 
     #[test]
     fn ln_gamma_matches_factorials() {

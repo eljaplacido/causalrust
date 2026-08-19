@@ -218,8 +218,10 @@ impl LinearATEEstimator {
             StdErrorKind::Hc1 | StdErrorKind::Hc3 => {
                 qr.robust_se(&x, &residual, 1, n, cols, se_kind)
             }
-            StdErrorKind::InfluenceFunction => {
-                // OLS has no weights, so the sandwich reduces to HC1.
+            StdErrorKind::InfluenceFunction | StdErrorKind::Bootstrap => {
+                // OLS has no weights, so the sandwich reduces to HC1, and
+                // there is no nuisance model for a bootstrap to capture. Both
+                // requests are honoured with the estimator that answers them.
                 qr.robust_se(&x, &residual, 1, n, cols, StdErrorKind::Hc1)
             }
         };
