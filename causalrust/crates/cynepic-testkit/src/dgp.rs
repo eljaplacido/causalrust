@@ -143,8 +143,15 @@ pub struct Dgp {
     pub effect: f64,
     /// How strongly covariates drive treatment assignment. 0.0 = randomised.
     pub confounding: f64,
-    /// Propensity overlap in `(0.0, 0.5]`. Smaller squeezes propensities toward
-    /// 0 and 1, which is what destroys IPW.
+    /// Propensity overlap in `(0.0, 1.0]`. `1.0` is good overlap; smaller
+    /// values squeeze propensities toward 0 and 1, which is what destroys IPW.
+    ///
+    /// The assignment index is standardised before this is applied, so the
+    /// meaning of a given value does not drift with `p` or `confounding`.
+    /// Without that, raising `p` from 3 to 25 silently turned a well-overlapped
+    /// world into a positivity violation, and any estimator measured on the
+    /// high-dimensional cell was being scored on a different question from the
+    /// one the cell claimed to ask.
     pub overlap: f64,
     /// Strength of nonlinear outcome terms. 0.0 = linear model is correct.
     pub nonlinearity: f64,
@@ -171,7 +178,7 @@ impl Default for Dgp {
             p: 3,
             effect: 2.0,
             confounding: 1.0,
-            overlap: 0.35,
+            overlap: 1.0,
             nonlinearity: 0.0,
             heteroskedastic: false,
             heterogeneity: 0.0,
@@ -212,9 +219,10 @@ impl Dgp {
         self
     }
 
-    /// Set propensity overlap. Values near 0 create a positivity violation.
+    /// Set propensity overlap. `1.0` is good; values near 0 create a positivity
+    /// violation.
     pub fn with_overlap(mut self, o: f64) -> Self {
-        self.overlap = o.clamp(0.01, 0.5);
+        self.overlap = o.clamp(0.01, 1.0);
         self
     }
 
@@ -294,11 +302,20 @@ impl Dgp {
             }
 
             // --- treatment assignment ---------------------------------------
-            let index: f64 = x.iter().take(p_obs).sum::<f64>() * self.confounding;
-            // `overlap` scales the logit so smaller values push propensities to
-            // the extremes. The propensity is bounded away from 0/1 only by the
-            // logistic function itself, so low overlap genuinely hurts.
-            let e_i = logistic(index / self.overlap.max(1e-3) * 0.5);
+            //
+            // The index is standardised by sqrt(p) so that its variance does
+            // not grow with the number of covariates. Without this, the logit's
+            // spread scaled as sqrt(p) and the `high-dim` cell became a severe
+            // positivity violation purely because it had more columns — which
+            // meant it was no longer testing dimensionality, it was testing
+            // overlap, and reporting the answer under the wrong label.
+            #[allow(clippy::cast_precision_loss)]
+            let scale = (p_obs.max(1) as f64).sqrt();
+            let index: f64 = x.iter().take(p_obs).sum::<f64>() * self.confounding / scale;
+            // `overlap` now maps directly onto the logit slope: 1.0 keeps
+            // propensities in roughly [0.2, 0.8]; small values push them to the
+            // extremes, where IPW weights explode.
+            let e_i = logistic(index * 0.5 / self.overlap.max(1e-3));
             propensity[i] = e_i;
 
             let (t, is_complier, z) = match self.instrument_strength {
@@ -401,6 +418,10 @@ impl DgpGrid {
                 "strong-confounding".into(),
                 Dgp::new().with_confounding(3.0),
             ),
+            // 4% of units extreme; every estimator should still cope.
+            ("moderate-overlap".into(), Dgp::new().with_overlap(0.35)),
+            // 71% extreme, ESS ~3 of 2000. Weighting is not valid here, and an
+            // estimator that returns a confident number is the failure.
             ("weak-overlap".into(), Dgp::new().with_overlap(0.06)),
             ("nonlinear".into(), Dgp::new().with_nonlinearity(2.0)),
             ("heteroskedastic".into(), Dgp::new().heteroskedastic()),
@@ -523,32 +544,64 @@ mod tests {
         );
     }
 
-    /// Documents a counter-intuitive property that would otherwise be mistaken
-    /// for a bug in the DGP — and that is a live trap for anyone building an
-    /// overlap diagnostic.
+    /// Effective sample size is **non-monotonic** in overlap, and therefore
+    /// cannot be used on its own to detect a positivity violation.
     ///
-    /// Effective sample size does **not** fall as overlap worsens. Under
-    /// near-deterministic assignment almost every unit lands in the arm it was
-    /// nearly certain to get, so its weight is ≈1 and ESS looks healthy. The
-    /// estimand is nonetheless unidentified.
+    /// Measured on this DGP at n=2000, seed 3:
     ///
-    /// This is why finding C6 asks for ESS *and* standardized mean differences
-    /// *and* the clipped-propensity count. No single number covers it.
+    /// ```text
+    /// overlap   extreme fraction   ESS
+    ///   1.00          0.000       1874     healthy, and really is
+    ///   0.35          0.040       1213
+    ///   0.20          0.236        403     ESS collapsing
+    ///   0.10          0.550          2     ESS at its worst
+    ///   0.03          0.847          1
+    ///   0.01          0.947        613     ESS RECOVERS while overlap is gone
+    /// ```
+    ///
+    /// The recovery at the bottom is the trap. Under near-deterministic
+    /// assignment almost every unit lands in the arm it was nearly certain to
+    /// get, so its inverse-probability weight is ≈1 and ESS looks healthy — at
+    /// the exact point where the estimand is least identified. A monitor
+    /// thresholding on ESS alone passes the worst case and fails the middling
+    /// one.
+    ///
+    /// This is why an overlap diagnostic needs the extreme-propensity fraction,
+    /// which is monotone, alongside ESS, which reports precision *once* overlap
+    /// is established.
     #[test]
-    fn ess_does_not_detect_an_overlap_violation() {
-        let balanced = Dgp::new().with_overlap(0.35).with_n(2_000).sample(3);
-        let extreme = Dgp::new().with_overlap(0.03).with_n(2_000).sample(3);
+    fn ess_is_non_monotonic_in_overlap_and_cannot_diagnose_it_alone() {
+        let sweep = [1.0, 0.35, 0.2, 0.1, 0.03, 0.01];
+        let measured: Vec<(f64, f64, f64)> = sweep
+            .iter()
+            .map(|&o| {
+                let d = Dgp::new().with_overlap(o).with_n(2_000).sample(3);
+                (o, d.extreme_propensity_fraction(0.05), d.true_weight_ess())
+            })
+            .collect();
 
+        // The extreme fraction IS monotone, which is what makes it usable.
+        for w in measured.windows(2) {
+            assert!(
+                w[1].1 >= w[0].1,
+                "extreme fraction must rise as overlap worsens: {:?} then {:?}",
+                w[0],
+                w[1]
+            );
+        }
+
+        // ESS is not. It falls, then recovers at the most severe violation.
+        let worst_ess = measured.iter().map(|m| m.2).fold(f64::INFINITY, f64::min);
+        let most_extreme = measured.last().expect("non-empty");
         assert!(
-            extreme.extreme_propensity_fraction(0.05) > 0.5,
-            "precondition: the extreme case really has broken overlap"
+            most_extreme.1 > 0.9,
+            "precondition: the last cell really has broken overlap ({:.3})",
+            most_extreme.1
         );
         assert!(
-            extreme.true_weight_ess() > balanced.true_weight_ess(),
-            "ESS is expected to look *better* under broken overlap — balanced {:.0}, extreme {:.0}. \
-             If this ever reverses, revisit the guidance on Dataset::true_weight_ess.",
-            balanced.true_weight_ess(),
-            extreme.true_weight_ess()
+            most_extreme.2 > worst_ess * 10.0,
+            "ESS should recover at the extreme (worst {worst_ess:.0}, most-extreme {:.0});              if this ever becomes monotone, ESS alone would suffice and the guidance on              Dataset::true_weight_ess should change",
+            most_extreme.2
         );
     }
 

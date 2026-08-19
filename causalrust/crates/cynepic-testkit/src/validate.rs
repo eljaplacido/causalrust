@@ -106,7 +106,13 @@ impl CoverageReport {
             self.nominal * 100.0,
             self.mean_ci_width,
             if self.n_failed > 0 {
-                format!(" failed={}", self.n_failed)
+                // "refused", not "failed": with Result-returning estimators
+                // this counts replications the estimator declined — no overlap,
+                // rank deficiency, a weak instrument. Declining is correct
+                // behaviour on a hostile cell, and conflating it with a wrong
+                // answer would penalise exactly the estimators that are honest
+                // about what they cannot do.
+                format!(" refused={}", self.n_failed)
             } else {
                 String::new()
             }

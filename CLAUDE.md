@@ -50,7 +50,7 @@ causalrust/                    # Git root
 ```bash
 cd causalrust/causalrust
 cargo build --workspace            # Build all crates
-cargo test --workspace --all-features   # 148 unit tests + 2 doctests
+cargo test --workspace --all-features   # 235 tests
 cargo test -p cynepic-core         # Test single crate
 cargo test -p cynepic-guardian --no-default-features  # Guardian without rego
 cargo test -p cynepic-guardian --features rego         # Guardian with rego
@@ -149,27 +149,33 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 |-------|--------|-------|-----------------|
 | core | Complete | 13 | Domain enum, engine trait, policy types, audit types, epistemic state |
 | guardian | Solid | 30 | Policy chains, Rego v1 (+ explicit v0 opt-in), circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
-| causal | **Provisional** | 30 + 7 guards | DAG, d-separation, backdoor/front-door, OLS (validated), IPW (**broken**), IV/2SLS, 4 refutation tests, counterfactual reasoning |
+| causal | **Validated** | 89 + 32 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
 | router | Solid | 17 | Keyword classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics (F1) |
 | bayes | Solid | 20 | 4 conjugate priors, 3 MCMC samplers, belief tracker, tool reliability |
 | graph | Solid | 10 | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 | testkit | Internal | 21 | Ground-truth DGPs, coverage/bias/RMSE harness, metamorphic relations (`publish = false`) |
 
-**Total: 148 unit tests + 2 doctests + 13 open findings specs, 0 warnings.**
+**Total: 235 tests, 2 open findings specs, 0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now
 > measured.
 >
-> **`cynepic-causal` is provisional.** `ols_adjusted` is validated: interval
-> coverage 94.7%–97.3% with bias below 0.02 across the standard DGP grid.
-> `PropensityScoreEstimator::ipw` is **broken** — 0.0% coverage, bias +1.8 to
-> +9.6 — and identification, refutation and `CausalDag`'s own acyclicity
-> invariant all have open defects.
+> **`cynepic-causal` is measured.** `ols_adjusted` achieves nominal coverage on
+> all nine DGP cells (93.0%–97.7%, bias below 0.02). `ipw` is nominal on seven
+> of eight estimable cells after the Tier 1 rewrite — it was 0.0% on every cell
+> before — and **under-covers at 87.3% under strong confounding**, which is the
+> one open finding (C14). It refuses outright where overlap is insufficient
+> rather than returning a confident number.
 >
-> Nine findings, thirteen executable specs, one document:
+> Ten findings, eleven closed, two open specs, one document:
 > **[docs/FINDINGS.md](causalrust/docs/FINDINGS.md)** is the single source of
 > truth. Do not restate finding detail anywhere else; link to it.
+>
+> Every estimator returns `Result`, and every `ATEResult` carries the
+> `Estimand` it computed (ATE / ATT / ATC / LATE), the `StdErrorKind` behind
+> its interval, and `Diagnostics` from the fit. `ATEResult` has no public
+> constructor, so a number cannot be separated from what it means.
 >
 > ```bash
 > ./scripts/findings-ratchet.sh    # the CI gate: count down only, all must fail

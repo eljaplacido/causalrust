@@ -2,21 +2,21 @@
 //!
 //! # Read this before quoting a number from here
 //!
-//! **Speed is only meaningful for an estimator that is correct.** Two of the
-//! three estimators benchmarked below currently return wrong answers:
-//! `PropensityScoreEstimator::ipw` has 0.0% confidence-interval coverage
-//! (findings C5 and C13), and `ols_adjusted` reports a standard error of
-//! exactly 0.0 on a rank-deficient design (C1). See `docs/FINDINGS.md`.
+//! **Speed is only meaningful for an estimator that is correct.** Every
+//! estimator benchmarked here is now validated by simulation — see
+//! `docs/FINDINGS.md` and `examples/coverage_report`. That was not true when
+//! this file was written: IPW then had 0.0% interval coverage, and its group
+//! was named `ipw_BROKEN_C5_C13` so the label survived copy-paste.
 //!
-//! Those benchmarks are kept anyway, and labelled, for two reasons. They give
-//! the Tier 1 fixes a before/after baseline — IRLS costs more per iteration
-//! than gradient descent but needs far fewer of them, and that trade should be
-//! measured rather than argued. And a fix that quietly makes the crate ten
-//! times slower is worth knowing about at the time, not later.
+//! The rule that produced that name still stands. A benchmark row for an
+//! estimator whose coverage is not measured must say so in the group name,
+//! because a fast wrong answer has negative value: it arrives sooner and is
+//! trusted more.
 //!
-//! What must never happen is a published performance claim sourced from a
-//! `[BROKEN]` row. A fast wrong answer has negative value: it arrives sooner
-//! and is trusted more.
+//! The IPW group is now named plainly, and the numbers moved when it was
+//! fixed — IRLS does more work per iteration than gradient descent and needs
+//! far fewer of them. Keeping the benchmark across that change is how the
+//! trade was measured rather than argued.
 //!
 //! # Why these are not run for time in CI
 //!
@@ -64,6 +64,7 @@ fn difference_in_means(c: &mut Criterion) {
                     black_box(&d.treatment),
                     black_box(&d.outcome),
                 )
+                .expect("benchmark fixtures are well posed")
             });
         });
     }
@@ -94,6 +95,7 @@ fn ols_adjusted(c: &mut Criterion) {
                         black_box(&d.outcome),
                         black_box(&d.covariates),
                     )
+                    .expect("benchmark fixtures are well posed")
                 });
             });
         }
@@ -101,16 +103,15 @@ fn ols_adjusted(c: &mut Criterion) {
     group.finish();
 }
 
-/// IPW — **[BROKEN]**, findings C5 and C13. Coverage is 0.0% on every cell of
-/// the standard grid and the point estimate carries a bias of +1.8 to +9.6.
+/// IPW over an IRLS-fitted propensity model.
 ///
-/// Benchmarked purely as the pre-fix baseline. The current cost is dominated by
-/// a fixed 100 iterations of gradient descent that does not converge; IRLS will
-/// do more work per iteration and roughly a tenth as many, so this number is
-/// the thing the replacement has to be compared against. Do not quote it as a
-/// performance characteristic of inverse probability weighting.
-fn ipw_broken_baseline(c: &mut Criterion) {
-    let mut group = c.benchmark_group("ipw_BROKEN_C5_C13");
+/// Cost is dominated by the propensity fit. IRLS solves a weighted least
+/// squares problem per iteration — far more expensive than a gradient step —
+/// but converges in under ten iterations rather than never, so it is both
+/// faster in wall-clock and correct. That is an unusually clean trade and it is
+/// worth keeping a benchmark on it.
+fn ipw(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ipw");
 
     for n in [500, 2_000, 10_000] {
         let data = Dgp::new().with_n(n).sample(3);
@@ -122,6 +123,7 @@ fn ipw_broken_baseline(c: &mut Criterion) {
                     black_box(&d.outcome),
                     black_box(&d.covariates),
                 )
+                .expect("benchmark fixtures have adequate overlap")
             });
         });
     }
@@ -133,9 +135,14 @@ fn ipw_broken_baseline(c: &mut Criterion) {
 fn chain_dag(nodes: usize) -> CausalDag {
     let mut dag = CausalDag::new();
     for i in 0..nodes.saturating_sub(1) {
-        dag.add_edge(&format!("X{i}"), &format!("X{}", i + 1));
-        dag.add_edge(&format!("U{i}"), &format!("X{i}"));
-        dag.add_edge(&format!("U{i}"), &format!("X{}", i + 1));
+        // Chain plus a confounder over each consecutive pair. Acyclic by
+        // construction, so these cannot fail.
+        dag.add_edge(&format!("X{i}"), &format!("X{}", i + 1))
+            .expect("chain is acyclic");
+        dag.add_edge(&format!("U{i}"), &format!("X{i}"))
+            .expect("confounder is acyclic");
+        dag.add_edge(&format!("U{i}"), &format!("X{}", i + 1))
+            .expect("confounder is acyclic");
     }
     dag
 }
@@ -144,8 +151,8 @@ fn chain_dag(nodes: usize) -> CausalDag {
 /// operations an interactive tool calls on every edit — so latency here is
 /// user-visible in a way the estimators' is not.
 ///
-/// `d_separated` is **[BROKEN]** for unknown variable names (C12), but every
-/// name used here exists in the graph, so these timings are of the real path.
+/// Both now return `Result`, so the benchmark measures the checked path —
+/// including the name validation that closed finding C12.
 fn graph_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("graph");
 
@@ -162,11 +169,16 @@ fn graph_operations(c: &mut Criterion) {
                     black_box(&last),
                     black_box(&conditioning),
                 )
+                .expect("all names exist in the fixture")
             });
         });
 
         group.bench_with_input(BenchmarkId::new("backdoor_find", nodes), &dag, |b, d| {
-            b.iter(|| BackdoorCriterion::find(black_box(d), black_box("X0"), black_box(&last)));
+            // Identification can legitimately fail on this graph shape; the
+            // benchmark measures the search either way.
+            b.iter(|| {
+                let _ = BackdoorCriterion::find(black_box(d), black_box("X0"), black_box(&last));
+            });
         });
     }
     group.finish();
@@ -176,7 +188,7 @@ criterion_group!(
     benches,
     difference_in_means,
     ols_adjusted,
-    ipw_broken_baseline,
+    ipw,
     graph_operations
 );
 criterion_main!(benches);

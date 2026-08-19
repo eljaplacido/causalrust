@@ -15,6 +15,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 petgraph = { workspace = true }
 ndarray = { workspace = true }
+# Refutation needs reproducible randomness (finding C8): ChaCha8 with the seed
+# on the public API, replacing an unseedable hand-rolled LCG.
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }

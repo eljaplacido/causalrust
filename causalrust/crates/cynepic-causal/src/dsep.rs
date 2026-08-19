@@ -1,28 +1,58 @@
 //! D-separation testing for causal DAGs.
 //!
-//! Uses the Bayes-Ball algorithm to determine whether two variables
-//! are d-separated given a conditioning set.
+//! Uses the Bayes-Ball algorithm to decide whether two variables are
+//! conditionally independent given a conditioning set.
+//!
+//! # Unknown variables are an error, not an answer
+//!
+//! This function previously returned `true` for any variable name the graph did
+//! not contain (finding C12). `true` means "d-separated", which means
+//! "conditionally independent" — so a misspelled variable produced a *positive*
+//! finding of independence, which is the answer most likely to be acted on. A
+//! typo in an adjustment set silently validated it.
+//!
+//! Every name in the query, including every member of the conditioning set, is
+//! now checked against the graph, and an unknown one returns
+//! [`DsepError::UnknownVariable`] listing what the graph does contain.
 
 use crate::dag::CausalDag;
+use crate::error::DsepError;
 use petgraph::Direction;
 use petgraph::graph::NodeIndex;
 use std::collections::{HashSet, VecDeque};
 
 /// Test whether `x` and `y` are d-separated given conditioning set `z`.
 ///
-/// Uses the Bayes-Ball algorithm on the underlying petgraph.
-/// A path through a node W is blocked if:
-/// - W is in Z and the path is a chain (->W->) or fork (<-W->)
-/// - W is NOT in Z (and no descendant of W is in Z) and the path is a collider (->W<-)
+/// A path through node W is blocked when W is in Z and the path is a chain
+/// (`->W->`) or a fork (`<-W->`), or when W is a collider (`->W<-`) and neither
+/// W nor any descendant of W is in Z. `x` and `y` are d-separated when no
+/// active path connects them.
 ///
-/// If Y is not reachable via any active path from X, then X and Y are d-separated given Z.
-pub fn d_separated(dag: &CausalDag, x: &str, y: &str, z: &HashSet<String>) -> bool {
-    let Some(x_idx) = dag.node_index(x) else {
-        return true;
+/// # Errors
+///
+/// [`DsepError::UnknownVariable`] if `x`, `y`, or any member of `z` is not in
+/// the graph.
+pub fn d_separated(
+    dag: &CausalDag,
+    x: &str,
+    y: &str,
+    z: &HashSet<String>,
+) -> Result<bool, DsepError> {
+    let unknown = |name: &str| DsepError::UnknownVariable {
+        name: name.to_string(),
+        known: dag.variables().to_vec(),
     };
-    let Some(y_idx) = dag.node_index(y) else {
-        return true;
-    };
+
+    let x_idx = dag.node_index(x).ok_or_else(|| unknown(x))?;
+    let y_idx = dag.node_index(y).ok_or_else(|| unknown(y))?;
+    // The conditioning set is checked too: adjusting for a variable that does
+    // not exist is exactly the mistake this is meant to catch, and it is the
+    // easiest one to make when the set is assembled programmatically.
+    for name in z {
+        if !dag.contains(name) {
+            return Err(unknown(name));
+        }
+    }
 
     let graph = dag.inner_graph();
 
@@ -48,9 +78,9 @@ pub fn d_separated(dag: &CausalDag, x: &str, y: &str, z: &HashSet<String>) -> bo
             continue;
         }
 
-        // Check if we reached Y
+        // Reached Y along an active path.
         if node == y_idx {
-            return false; // Not d-separated
+            return Ok(false);
         }
 
         let in_z = z_indices.contains(&node);
@@ -96,7 +126,8 @@ pub fn d_separated(dag: &CausalDag, x: &str, y: &str, z: &HashSet<String>) -> bo
         }
     }
 
-    true // Y not reachable => d-separated
+    // Y unreachable along every active path.
+    Ok(true)
 }
 
 /// Compute all ancestors of a set of nodes (including the nodes themselves).
@@ -122,87 +153,106 @@ mod tests {
     use super::*;
     use crate::dag::CausalDag;
 
+    fn dag_from(edges: &[(&str, &str)]) -> CausalDag {
+        let mut dag = CausalDag::new();
+        for &(a, b) in edges {
+            dag.add_edge(a, b).expect("acyclic fixture");
+        }
+        dag
+    }
+
+    fn sep(dag: &CausalDag, x: &str, y: &str, z: &[&str]) -> bool {
+        let set: HashSet<String> = z.iter().map(|s| (*s).to_string()).collect();
+        d_separated(dag, x, y, &set).expect("known variables")
+    }
+
     #[test]
     fn chain_blocked_by_middle() {
-        // X -> W -> Y
-        // Conditioning on W blocks the chain.
-        let mut dag = CausalDag::new();
-        dag.add_edge("X", "W");
-        dag.add_edge("W", "Y");
-
-        let z = HashSet::from(["W".to_string()]);
-        assert!(d_separated(&dag, "X", "Y", &z));
-
-        // Without conditioning, not d-separated.
-        let empty: HashSet<String> = HashSet::new();
-        assert!(!d_separated(&dag, "X", "Y", &empty));
+        // X -> W -> Y. Conditioning on W blocks the chain.
+        let dag = dag_from(&[("X", "W"), ("W", "Y")]);
+        assert!(sep(&dag, "X", "Y", &["W"]));
+        assert!(!sep(&dag, "X", "Y", &[]));
     }
 
     #[test]
     fn fork_blocked_by_common_cause() {
-        // X <- W -> Y
-        // Conditioning on W blocks the fork.
-        let mut dag = CausalDag::new();
-        dag.add_edge("W", "X");
-        dag.add_edge("W", "Y");
-
-        let z = HashSet::from(["W".to_string()]);
-        assert!(d_separated(&dag, "X", "Y", &z));
-
-        // Without conditioning, not d-separated.
-        let empty: HashSet<String> = HashSet::new();
-        assert!(!d_separated(&dag, "X", "Y", &empty));
+        // X <- W -> Y. Conditioning on the common cause blocks the fork.
+        let dag = dag_from(&[("W", "X"), ("W", "Y")]);
+        assert!(sep(&dag, "X", "Y", &["W"]));
+        assert!(!sep(&dag, "X", "Y", &[]));
     }
 
     #[test]
-    fn collider_blocked_unless_conditioned() {
-        // X -> W <- Y
-        // Collider: X and Y are d-separated without conditioning.
-        // Conditioning on W opens the path.
-        let mut dag = CausalDag::new();
-        dag.add_edge("X", "W");
-        dag.add_edge("Y", "W");
-
-        let empty: HashSet<String> = HashSet::new();
-        assert!(d_separated(&dag, "X", "Y", &empty));
-
-        let z = HashSet::from(["W".to_string()]);
-        assert!(!d_separated(&dag, "X", "Y", &z));
+    fn collider_opens_when_conditioned() {
+        // X -> W <- Y. The collider blocks by default and opens on
+        // conditioning — the direction that surprises people.
+        let dag = dag_from(&[("X", "W"), ("Y", "W")]);
+        assert!(sep(&dag, "X", "Y", &[]));
+        assert!(!sep(&dag, "X", "Y", &["W"]));
     }
 
     #[test]
-    fn complex_case() {
-        // A -> B -> C -> D
-        // A -> E -> D
-        // B -> E (collider at E for paths through B and from external)
-        //
-        // DAG: A->B, B->C, C->D, A->E, B->E, E->D
-        let mut dag = CausalDag::new();
-        dag.add_edge("A", "B");
-        dag.add_edge("B", "C");
-        dag.add_edge("C", "D");
-        dag.add_edge("A", "E");
-        dag.add_edge("B", "E");
-        dag.add_edge("E", "D");
+    fn collider_opens_when_a_descendant_is_conditioned() {
+        // X -> W <- Y, W -> D. Conditioning on D also opens the collider.
+        let dag = dag_from(&[("X", "W"), ("Y", "W"), ("W", "D")]);
+        assert!(sep(&dag, "X", "Y", &[]));
+        assert!(!sep(&dag, "X", "Y", &["D"]));
+    }
 
-        // Without conditioning: A->B->C->D is active, so A and D are not d-separated.
-        let empty: HashSet<String> = HashSet::new();
-        assert!(!d_separated(&dag, "A", "D", &empty));
+    #[test]
+    fn d_separation_is_symmetric() {
+        let dag = dag_from(&[("A", "B"), ("B", "C"), ("A", "E"), ("E", "D"), ("C", "D")]);
+        for (x, y) in [("A", "D"), ("B", "E"), ("C", "E")] {
+            for z in [vec![], vec!["B"], vec!["E"], vec!["B", "E"]] {
+                assert_eq!(
+                    sep(&dag, x, y, &z),
+                    sep(&dag, y, x, &z),
+                    "asymmetric for {x}/{y} given {z:?}"
+                );
+            }
+        }
+    }
 
-        // Conditioning on {B, E}: blocks A->B chain, blocks A->E chain.
-        // Path A->B->C->D: blocked at B (chain, B in Z).
-        // Path A->E->D: blocked at E (chain, E in Z).
-        // But conditioning on E opens collider B->E<-A... wait, E has parents A and B,
-        // so E is a collider on path A->E<-B. Conditioning on E opens that.
-        // Through opened collider: A->(E conditioned)<-B->C->D
-        // But B is also in Z, so chain B->C blocked.
-        // So A and D should be d-separated given {B, E}.
-        let z = HashSet::from(["B".to_string(), "E".to_string()]);
-        assert!(d_separated(&dag, "A", "D", &z));
+    #[test]
+    fn unknown_x_is_an_error_not_independence() {
+        // C12. This returned `true` — a positive finding of independence for a
+        // variable the graph had never heard of.
+        let dag = dag_from(&[("X", "Y")]);
+        let empty = HashSet::new();
+        let err = d_separated(&dag, "typo", "Y", &empty).unwrap_err();
+        match err {
+            DsepError::UnknownVariable { name, known } => {
+                assert_eq!(name, "typo");
+                assert!(known.contains(&"X".to_string()));
+            }
+        }
+    }
 
-        // Conditioning on {C}: blocks chain B->C->D.
-        // But A->E->D is still active. So A and D are not d-separated.
-        let z2 = HashSet::from(["C".to_string()]);
-        assert!(!d_separated(&dag, "A", "D", &z2));
+    #[test]
+    fn unknown_y_is_an_error() {
+        let dag = dag_from(&[("X", "Y")]);
+        let empty = HashSet::new();
+        assert!(d_separated(&dag, "X", "typo", &empty).is_err());
+    }
+
+    #[test]
+    fn unknown_conditioning_variable_is_an_error() {
+        // The likeliest typo in practice: the adjustment set is assembled
+        // programmatically and one name does not match.
+        let dag = dag_from(&[("X", "W"), ("W", "Y")]);
+        let z = HashSet::from(["Wt".to_string()]);
+        let err = d_separated(&dag, "X", "Y", &z).unwrap_err();
+        assert!(matches!(
+            err,
+            DsepError::UnknownVariable { ref name, .. } if name == "Wt"
+        ));
+    }
+
+    #[test]
+    fn disconnected_variables_are_d_separated() {
+        let mut dag = dag_from(&[("A", "B")]);
+        dag.add_variable("Z");
+        let empty = HashSet::new();
+        assert!(d_separated(&dag, "A", "Z", &empty).expect("known"));
     }
 }

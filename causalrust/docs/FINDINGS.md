@@ -1,14 +1,15 @@
-# Open correctness findings — `cynepic-causal`
+# Correctness findings — `cynepic-causal`
 
-> **Status: `cynepic-causal` produces provisional numbers.** OLS is validated
-> and sound. IPW, identification, refutation and the DAG's own invariants are
-> not. Do not use this crate to make a decision you cannot afford to get wrong
-> until Tier 1 closes.
+> **Status: eleven of thirteen findings closed. One new finding opened by the
+> fix.** `LinearATEEstimator` achieves nominal coverage on all nine grid cells.
+> IPW achieves nominal coverage on seven of eight estimable cells and
+> **under-covers by ~8 points under strong confounding** (C14, open). Read the
+> [coverage table](#measured-coverage) before using a number from this crate.
 
-This is the single source of truth for the C-series findings. Everything else
-that mentions them — the `allow` entries in `[workspace.lints]`, the `#[ignore]`
-reasons in `crates/cynepic-causal/tests/findings.rs`, the status table in
-`CLAUDE.md` — points here and must not restate the detail.
+Single source of truth for the C-series findings. Everything else that mentions
+them — the `allow` entries in `[workspace.lints]`, the spec names in
+`crates/cynepic-causal/tests/findings.rs`, the status table in `CLAUDE.md` —
+points here and must not restate the detail.
 
 ## How a finding moves
 
@@ -17,71 +18,350 @@ confirmed  →  failing spec in tests/findings.rs, #[ignore]d  →  fix + delete
               the #[ignore] in the same PR  →  ratchet count drops
 ```
 
-A fix that arrives without deleting its `#[ignore]` has not been demonstrated.
-`scripts/findings-ratchet.sh` enforces the count in CI: it may only ever go
-down.
+`scripts/findings-ratchet.sh` enforces three invariants in CI: the open count
+may only go down, the specs still compile, and **every open spec still fails**.
+That third check is what caught four mislabelled specs during the re-baseline,
+and it is why a fixed finding cannot quietly stay on the books.
 
 ## Ledger
 
-| ID | Component | Defect | Severity | Specs | Tier |
-|----|-----------|--------|----------|-------|------|
-| [C1](#c1) | `estimate::linear` | Singular design reported with zero uncertainty | **Critical** | 1 | 1 |
-| [C2](#c2) | `identify` | Adjustment set may name an unobservable variable; identification cannot fail | **Critical** | 2 | 1 |
-| [C5](#c5) | `estimate::propensity` | Variance formula does not describe the point estimate | High | 1 | 1 |
-| [C7](#c7) | `refute` | Verdicts are magic constants; placebo ignores the estimator given | High | 2 | 1 |
-| [C8](#c8) | `refute` | Hand-rolled LCG as the source of randomness | Medium | — | 1 |
-| [C10](#c10) | `estimate` | Panics or invents numbers on degenerate input | High | 3 | 1 |
-| [C11](#c11) | `dag` | `CausalDag` does not enforce acyclicity | **Critical** | 2 | 1 |
-| [C12](#c12) | `dsep` | Unknown variables reported as d-separated | **Critical** | 1 | 1 |
-| [C13](#c13) | `estimate::propensity` | Propensity model never converges | **Critical** | 1 | 1 |
+| ID | Component | Defect | Severity | Status |
+|----|-----------|--------|----------|--------|
+| [C1](#c1) | `estimate::linear` | Singular design reported with zero uncertainty | Critical | **Closed** |
+| [C2](#c2) | `identify` | Adjustment set could name a latent variable; identification could not fail | Critical | **Closed** |
+| [C5](#c5) | `estimate::propensity` | Variance formula did not describe the point estimate | High | **Closed** |
+| [C7](#c7) | `refute` | Verdicts were magic constants; placebo ignored the estimator | High | **Closed** |
+| [C8](#c8) | `refute` | Hand-rolled LCG as the source of randomness | Medium | **Closed** |
+| [C10](#c10) | `estimate` | Panicked or invented numbers on degenerate input | High | **Closed** |
+| [C11](#c11) | `dag` | `CausalDag` did not enforce acyclicity | Critical | **Closed** |
+| [C12](#c12) | `dsep` | Unknown variables reported as d-separated | Critical | **Closed** |
+| [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
+| [C14](#c14) | `estimate::propensity` | IPW under-covers where weights are heavy | High | **OPEN** |
 
-Nine findings, 13 open specs. `estimate::linear`'s OLS path is **not** on this
-list: it is measured sound (see [Validated](#validated)).
+```
+open specs:   18   →   20   →   13   →   2
+            initial  measured  re-baselined  after Tier 1
+```
 
 Severity is about silence, not size. A defect that makes the crate panic is
-High. A defect that makes it return a confident, plausible, wrong number is
-Critical, because nothing downstream can detect it.
+High. One that makes it return a confident, plausible, wrong number is Critical,
+because nothing downstream can detect it.
 
 ---
 
-## <a id="c13"></a>C13 — the propensity model never converges
+## <a id="c14"></a>C14 — IPW under-covers where the weights are heavy · **OPEN**
 
-**The largest defect in the crate, and it was invisible until coverage was
-measured.**
+**This finding was created by the fix for C5.** It is filed rather than tuned
+away because under-coverage is the dangerous direction: an interval that lies
+about its own confidence.
 
-`PropensityScoreEstimator::ipw` fits its logistic regression with a fixed 100
-iterations of gradient descent at `lr = 0.1`, starting from zero, with no
-convergence check and no way for a caller to find out:
+Correcting IPW's variance for the propensity being *estimated* rather than known
+is the right adjustment — the influence function is projected off the propensity
+model's score, since estimation error in `e` partly cancels estimation error in
+the effect. Before the correction IPW over-covered at 100% with intervals about
+three times wider than necessary. After it:
+
+| cell | bias | Monte Carlo sd | reported SE | coverage |
+|---|---|---|---|---|
+| benign | −0.0006 | 0.049 | 0.050 | 94.7% |
+| strong-confounding | +0.0331 | 0.161 | 0.147 | **87.3%** |
+| moderate-overlap | +0.0170 | 0.151 | 0.141 | 92.3% |
+
+The point estimate is sound everywhere — bias is under 0.04. The standard error
+is understated by roughly 9% at strong confounding. Two mechanisms are plausible
+and not yet separated:
+
+1. The projection coefficient is estimated **in-sample**, so it removes some
+   variation that is genuinely sampling noise rather than nuisance-estimation
+   error. Cross-fitting would address this.
+2. At `confounding = 3.0` the weight distribution is heavy-tailed enough that a
+   symmetric normal interval is the wrong *shape*, independent of its width.
+
+**Fix.** A cross-fitted projection, or a bootstrap that refits the propensity
+model inside each resample and so captures both mechanisms at once. The
+bootstrap machinery already exists in `refute::Refuter::bootstrap`.
+
+Specs: `c14_ipw_coverage_is_nominal_under_strong_confounding`,
+`c14_att_coverage_is_nominal_under_strong_confounding`.
+
+**Until it is fixed**, prefer `ols_adjusted` when the outcome model is plausibly
+linear — it is nominal on every cell — and read `Diagnostics::effective_n` and
+`propensity_range` before trusting an IPW interval on strongly confounded data.
+
+---
+
+## <a id="c1"></a>C1 — singular design reported with zero uncertainty · Closed
+
+`solve_normal_equation` returned a zero vector on a small pivot and
+`invert_matrix` returned a zero matrix, neither signalling. With exactly
+collinear covariates the caller received a plausible ATE and a standard error of
+exactly 0.0 — infinite confidence, which passes every downstream significance
+test.
+
+**Fixed** by replacing Gaussian elimination with **Householder QR with column
+pivoting**. Pivoting moves dependent columns to the end, so rank deficiency is
+not merely tolerated but *detected*, and the offending columns can be named:
+`EstimationError::RankDeficient { rank, expected, aliased }`.
+
+QR also never forms `X'X`, which squares the condition number — the usual reason
+a normal-equations solver loses precision that QR keeps.
+
+Specs: `c1_rank_deficient_design_is_an_error_naming_the_aliased_columns`,
+`c1_standard_error_is_never_exactly_zero`.
+
+---
+
+## <a id="c2"></a>C2 — identification could not fail · Closed
+
+`BackdoorCriterion::find` returned `Option<HashSet<String>>` and in practice
+always `Some`: the parents of the treatment, with no check that they were
+measurable or that they blocked anything. On the crate's own front-door fixture,
+where `U` is documented as unobserved, it returned `{U}`.
+
+`None` already meant "no adjustment needed" — a *successful* identification — so
+it could not also mean "not identifiable". Opposite conclusions sharing one
+representation.
+
+**Fixed** with `VarKind::{Observed, Latent}` on the DAG and
+`Result<AdjustmentSet, IdentificationError>` from the criterion. Failure
+distinguishes `RequiresLatent` (measure the variable) from `NotIdentifiable`
+(change strategy), because the remedies differ.
+
+Returned sets are now **verified**, not constructed: validity is checked by
+d-separation on the graph with the treatment's outgoing edges deleted, rather
+than assumed from a parent-set heuristic.
+
+Specs: `c2_adjustment_set_never_contains_a_latent_variable`,
+`c2_identification_can_fail`,
+`c2_no_adjustment_needed_is_distinct_from_not_identifiable`.
+
+---
+
+## <a id="c5"></a>C5 — IPW's variance did not describe IPW's point estimate · Closed
+
+The point estimate was Hájek (normalised by the sum of weights); the variance
+summed Horvitz–Thompson contributions (`y_i / e_i`, unnormalised) and centred
+them on the Hájek estimate. Different scales, so the subtraction was not a
+residual and the result was not that estimator's variance.
+
+**Fixed** with an influence-function variance derived from the same estimating
+equation as the point estimate — each arm's residual taken against that arm's
+own Hájek mean, scaled by that arm's own mean weight — plus the
+estimated-propensity projection described in [C14](#c14). HC1 and HC3 robust
+standard errors were added for OLS at the same time.
+
+**Why the metamorphic relations never caught it.** Duplicating a dataset must
+leave the estimate unchanged and shrink the standard error by √2. IPW satisfied
+both halves throughout, because duplication probes how a variance scales with
+`n`, and this variance got the `n` dependence right while getting the *scale*
+wrong. A formula uniformly wrong by a constant factor still shrinks by √2.
+
+Coverage caught it, because coverage compares an interval against a known truth
+rather than against another interval. This is the clearest argument in the
+repository for why the harness needed ground-truth simulation and not just
+metamorphic relations.
+
+Specs: `c5_ipw_intervals_achieve_nominal_coverage`,
+`c5_ols_intervals_achieve_nominal_coverage`,
+`c5_coverage_survives_heteroskedasticity`,
+`c5_ipw_reports_an_influence_function_variance`.
+
+---
+
+## <a id="c7"></a>C7 — refutation verdicts were magic constants · Closed
 
 ```rust
-let learning_rate = 0.1;
-let n_iterations = 100;
-for _ in 0..n_iterations { /* ... no stopping rule ... */ }
+let passed = relative_change < 0.15; // Less than 15% change
 ```
 
-On the benign DGP (n=2000, p=3, confounding=1.0, overlap=0.35) it stops at
-roughly 55% of the true coefficients. Propensity scores compress toward 0.5,
-the weights under-correct, and most of the confounding survives:
+Never consulted the estimate's uncertainty. A 14% shift on a tightly-estimated
+effect passed; a 16% shift on one spanning zero failed. `placebo_treatment`
+additionally took only `(outcome, ate, tolerance)` — never the treatment, the
+covariates, or the estimator — and always re-estimated with
+`difference_in_means`, so it produced a verdict about an analysis the caller had
+never run.
 
-| Configuration | Bias |
+**Fixed** with a `Study` type carrying data, adjustment set and estimator, and
+verdicts expressed in **standard errors**. Doubling the sample now makes the
+tests harder to pass, which is what a robustness test should do.
+
+One subtlety found while fixing it: the placebo verdict must be scored against
+the **placebo run's own** standard error, not the original's. Randomising
+treatment removes the treatment term from the fit, so the placebo's residual
+variance legitimately includes everything the real effect used to explain.
+Scoring it against the original's much smaller SE failed sound analyses about a
+third of the time.
+
+Specs: `c7_refutation_verdict_depends_on_uncertainty`,
+`c7_placebo_uses_the_studys_own_estimator`.
+
+---
+
+## <a id="c8"></a>C8 — hand-rolled LCG · Closed
+
+```rust
+self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+```
+
+A bare linear congruential generator, unseedable from outside, so a refutation
+result could not be reproduced or varied.
+
+**Fixed** with `rand_chacha::ChaCha8Rng` and the seed on the public API.
+
+Spec: `c8_refutation_is_seeded_and_reproducible`.
+
+---
+
+## <a id="c10"></a>C10 — degenerate input panicked or invented numbers · Closed
+
+Three paths: `difference_in_means` substituted `0.0` for a missing arm's mean
+(so a single-arm dataset returned a confident effect equal to the treated mean);
+`assert_eq!` on caller-supplied lengths killed any embedding service; and `n = 0`
+was unguarded.
+
+**Fixed** with a `Result`-returning API throughout and
+`EstimationError::{EmptyArm, LengthMismatch, NoObservations, InsufficientData,
+ConstantTreatment}`.
+
+The regression test is deliberately broader than the original finding: rather
+than enumerating known-bad cases, it throws five degenerate shapes at every
+public estimator and requires each to return rather than unwind.
+
+Specs: `c10_single_arm_data_is_an_error`, `c10_mismatched_lengths_do_not_panic`,
+`c10_empty_dataset_is_an_error`, `c10_no_estimator_panics_on_degenerate_input`.
+
+---
+
+## <a id="c11"></a>C11 — `CausalDag` did not enforce that it is a DAG · Closed
+
+`add_edge` returned `()` and accepted cycles and self-loops. A type named
+`CausalDag` holding a cyclic graph invalidates every algorithm built on it —
+d-separation, backdoor search and the counterfactual engine all assume
+acyclicity and will silently produce nonsense or fail to terminate.
+
+**Fixed** — `add_edge` returns `Result<(), DagError>` and rejects any edge whose
+target already reaches its source, naming the cycle. The check runs *before*
+insertion, so the graph is valid at every point rather than inserted and rolled
+back. Deserialisation goes through the same path, so a serialised cyclic graph
+is rejected on load.
+
+Specs: `c11_cycles_are_rejected_at_construction`, `c11_self_loops_are_rejected`,
+`c11_acyclicity_holds_under_arbitrary_insertion_orders`.
+
+---
+
+## <a id="c12"></a>C12 — unknown variables reported as d-separated · Closed
+
+`d_separated` returned `true` for names the graph had never heard of. `true`
+means "conditionally independent", so a typo read as a *positive* finding of
+independence — the answer most likely to be acted on.
+
+**Fixed** — returns `Result<bool, DsepError>`, and checks the conditioning set
+too. That last part matters most in practice: adjustment sets are usually
+assembled programmatically, and one mismatched name silently validated the whole
+set.
+
+Specs: `c12_unknown_variable_is_an_error`,
+`c12_unknown_conditioning_variable_is_an_error`.
+
+---
+
+## <a id="c13"></a>C13 — the propensity model never converged · Closed
+
+The largest defect in the crate, invisible until coverage was measured. The
+logistic regression ran a **fixed 100 iterations of gradient descent at lr=0.1**
+with no convergence check and no way for a caller to find out.
+
+| configuration | bias |
 |---|---|
 | 100 iterations (as shipped) | **+1.80** |
 | 10,000 iterations | +0.26 |
 | 500,000 iterations | +0.26 |
-| Oracle propensity, no fitting | +0.13 |
-| Naive difference in means (no adjustment at all) | +3.40 |
+| oracle propensity, no fitting | +0.13 |
+| naive difference in means (no adjustment at all) | +3.40 |
 
 ```
 beta after 100 iterations   [0.02, 0.90, 0.78, 0.76]
 true logit coefficients     [0.00, 1.43, 1.43, 1.43]
 ```
 
-10k and 500k agree to four decimals, so +0.26 is the converged answer and
-non-convergence accounts for **86% of the bias**. The shipped estimator removes
-about 47% of the confounding it exists to remove, and reports a 95% interval
-0.4 wide while doing it.
+Non-convergence accounted for **86%** of the bias. The estimator removed about
+47% of the confounding it exists to remove, while reporting a 95% interval 0.4
+wide. Measured coverage was 0.0% on seven of eight cells.
 
-Measured coverage across the standard grid is **0.0%** in seven of eight cells:
+**Why the test suite missed it.** `ipw_known_effect` asserted
+`|ate - 5.0| < 2.0` — a 40% tolerance — on one binary covariate with propensities
+of 0.25 and 0.75, a problem easy enough that 100 iterations does converge. The
+replacement test asks for 2%.
+
+**Fixed** with IRLS / Fisher scoring, converging in under ten iterations, and
+`EstimationError::NotConverged` rather than a silent partial fit. The fitted
+model is now returned by `fit_propensity` so a caller can check whether the
+propensity model recovered the assignment mechanism separately from whether the
+effect estimate is right.
+
+Two things were found while fixing it:
+
+- **Separation needs its own detection.** Under perfect separation the
+  coefficients diverge but the *score vanishes* as fitted probabilities
+  saturate, so IRLS reports convergence at an arbitrary finite point. The
+  gradient test cannot see it. `EstimationError::Separation` checks for fitted
+  probabilities pinned at 0 or 1.
+- **Overlap is checked, not clipped.** Silently clamping propensities to
+  `[0.01, 0.99]` converts a violated assumption into a plausible number.
+  `EstimationError::InsufficientOverlap` now refuses when more than 10% of units
+  fall outside `[0.02, 0.98]` — which is why the `weak-overlap` cell shows
+  `refused=300` rather than a confident wrong answer.
+
+Specs: `c13_ipw_removes_most_of_the_confounding`,
+`c13_propensity_fit_converges_and_reports_it`,
+`c13_weak_overlap_is_refused_or_diagnosed`.
+
+---
+
+## <a id="measured-coverage"></a>Measured coverage
+
+`cargo run -p cynepic-causal --example coverage_report --release`, 300
+replications per cell, nominal 95%.
+
+### `LinearATEEstimator::ols_adjusted` — nominal on every cell
+
+| cell | bias | coverage | width |
+|---|---|---|---|
+| benign | −0.0010 | 95.0% | 0.181 |
+| strong-confounding | +0.0019 | 96.7% | 0.207 |
+| moderate-overlap | +0.0023 | 96.3% | 0.205 |
+| weak-overlap | +0.0064 | 94.3% | 0.281 |
+| nonlinear | −0.0158 | 93.0% | 0.523 |
+| heteroskedastic | −0.0032 | 94.7% | 0.339 |
+| heterogeneous-effects | −0.0001 | 97.7% | 0.226 |
+| small-n | −0.0044 | 94.3% | 0.745 |
+| high-dim | +0.0043 | 97.0% | 0.418 |
+
+### `PropensityScoreEstimator::ipw` — nominal on 7 of 8 estimable cells
+
+| cell | bias | coverage | width |
+|---|---|---|---|
+| benign | −0.0006 | 94.7% | 0.195 |
+| strong-confounding | +0.0331 | **87.3%** | 0.575 |
+| moderate-overlap | +0.0170 | 92.3% | 0.552 |
+| weak-overlap | — | *refused, 300/300* | — |
+| nonlinear | −0.0173 | 93.7% | 0.568 |
+| heteroskedastic | −0.0033 | 94.7% | 0.355 |
+| heterogeneous-effects | +0.0003 | 98.0% | 0.242 |
+| small-n | +0.0007 | 95.0% | 0.825 |
+| high-dim | +0.0024 | 93.0% | 0.831 |
+
+`refused` is a result, not a gap. Weighting cannot manufacture a comparison the
+data does not contain; on the weak-overlap cell (71% of units outside the
+overlap bounds, effective sample size ~3 of 2000) refusing is correct, and the
+previous implementation's confident numbers there were the failure.
+
+`att` shares the weighting machinery and shows the same pattern: nominal on six
+of eight, under-covering on `strong-confounding` (86.7%) and `moderate-overlap`
+(89.3%). Both are C14.
+
+### For comparison — before Tier 1
 
 ```
  LOW  benign                bias=+1.8123  coverage=0.0%   width=0.400
@@ -90,265 +370,31 @@ Measured coverage across the standard grid is **0.0%** in seven of eight cells:
  LOW  high-dim              bias=+9.6242  coverage=0.0%   width=1.241
 ```
 
-Nominal 95% intervals containing the truth 0% of the time is not a tuning
-issue.
-
-**Why the test suite missed it.** `ipw_known_effect` asserts
-`|ate - 5.0| < 2.0` — a 40% tolerance — on a single binary covariate with
-propensities of 0.25 and 0.75. That problem is easy enough that 100 iterations
-does converge, and the tolerance is wide enough to accept a broken estimator
-anyway.
-
-**Fix.** Replace gradient descent with IRLS/Newton, which converges in
-5–10 iterations for this class of problem. Return `Err(NotConverged { iters,
-gradient_norm })` rather than a silent partial fit. Expose the fitted scores so
-a caller can check the propensity model separately from the effect estimate —
-`Dataset::propensity` carries the truth specifically to make that comparison
-possible, and today there is nothing to compare against.
-
-Spec: `c13_ipw_must_remove_most_of_the_confounding`. It asserts IPW removes
->90% of the confounding bias that naive difference-in-means leaves behind. It
-currently removes 47%; a converged fit reaches ~92%. The spec avoids depending
-on the fitted scores precisely because they are not observable — which is part
-of the finding.
-
----
-
-## <a id="c1"></a>C1 — a singular design matrix is reported as a precise result
-
-`solve_normal_equation` returns a zero vector on a small pivot and
-`invert_matrix` returns a zero matrix, both without signalling. With two exactly
-collinear covariates the caller receives a **non-zero ATE with a standard error
-of exactly 0.0** — infinite confidence, which passes any significance test
-downstream.
-
-Zero uncertainty is never a legitimate output of a finite sample.
-
-**Scope, measured.** The damage is confined to the variance. Appending an
-exactly collinear column does *not* move the treatment coefficient — the
-aliasing collapses the redundant column's own coefficient and leaves the rest
-of the solution intact — so the point estimate survives and only the standard
-error is destroyed. `c1_collinear_column_must_not_change_the_estimate` was
-written expecting the opposite, passed, and now runs as a regression guard
-instead. That narrows C1 from "the estimate is arbitrary" to "the estimate is
-fine and reported with infinite confidence", which is still Critical: an
-`se` of 0.0 makes every downstream significance test succeed.
-
-**Fix.** Rank-revealing QR (or SVD with a condition-number check). Return
-`Err(RankDeficient { rank, expected, aliased })` naming the offending columns.
-
-Spec: `c1_standard_error_is_never_exactly_zero`.
-
----
-
-## <a id="c2"></a>C2 — identification can return an adjustment set you cannot measure
-
-`BackdoorCriterion::find` returns `Option<HashSet<String>>` and, in practice,
-always `Some`. Two consequences:
-
-1. There is no concept of a latent variable, so on the crate's own front-door
-   test DAG — where `U` is documented as unobserved — it returns `{U}` as the
-   adjustment set. Adjusting for `U` is impossible by construction.
-2. Identification cannot fail. A criterion that never returns "no" is not a
-   criterion; it is a formatting function.
-
-`None` currently means "no adjustment needed", so it cannot also mean "not
-identifiable" — the two are opposite conclusions sharing one representation.
-
-**Fix.** Introduce `VarKind::{Observed, Latent}`. Return
-`Result<AdjustmentSet, NotIdentifiable>` with the blocking paths named.
-
-Specs: `c2_adjustment_set_must_not_contain_a_latent_variable`,
-`c2_identification_can_fail`.
-
----
-
-## <a id="c5"></a>C5 — IPW's variance does not describe IPW's point estimate
-
-The point estimate is Hájek (normalised by the sum of weights). The variance
-sums Horvitz–Thompson contributions (`y_i / e_i`, unnormalised) and centres them
-on the Hájek estimate. The two are on different scales, so the subtraction is
-not a residual and the result is not that estimator's variance.
-
-There are also no heteroskedasticity-robust (HC1/HC3) standard errors anywhere
-in the crate.
-
-Distinct from [C13](#c13) and **smaller**: fixing the variance alone leaves the
-point estimate biased by +1.80. Both must land for IPW coverage to be nominal.
-This ordering was not obvious before the coverage harness existed, and the
-original finding had them the other way round.
-
-**Why the metamorphic relations do not catch it.** Duplicating the dataset
-must leave the point estimate unchanged and shrink the standard error by √2.
-IPW satisfies both halves, because duplication probes how a variance scales
-with `n`, and this variance gets the `n` dependence right while getting the
-*scale* wrong. A formula uniformly wrong by a constant factor still shrinks by
-√2. The spec file previously claimed duplication was "unusually good at
-exposing" C5; it is not, and that claim is now corrected in place.
-
-Coverage catches it, because coverage compares an interval against a known
-truth rather than against another interval. This is the clearest argument in
-the repository for why the harness had to include ground-truth simulation and
-not just metamorphic relations.
-
-**Fix.** Hájek-consistent influence-function variance; HC1/HC3 for OLS.
-
-Spec: `c5_ipw_intervals_must_achieve_nominal_coverage`.
-
----
-
-## <a id="c7"></a>C7 — refutation verdicts are magic constants
-
-```rust
-let passed = relative_change < 0.15; // Less than 15% change
-```
-
-The verdict never consults the estimate's own uncertainty. A 14% shift on a
-tightly-estimated effect passes; a 16% shift on one with an interval spanning
-zero fails. Both verdicts are noise.
-
-`placebo_treatment` additionally hardcodes `difference_in_means` and drops the
-covariates, so it refutes an estimator the caller did not run. A placebo test
-that passes for a different estimator is not evidence about yours.
-
-Being a *relative* threshold, it is also not scale-invariant in the way the
-metamorphic scaling relation requires.
-
-**Fix.** Express verdicts in standard errors of the original estimate. Take the
-estimator as a parameter instead of assuming one.
-
-Specs: `c7_refutation_verdict_must_depend_on_uncertainty`,
-`c7_placebo_must_distinguish_adjusted_from_confounded`. The latter replaced a
-spec that asserted `result.passed` on a single estimate — satisfied by a
-refuter that always returns `passed`, and therefore evidence of nothing.
-
----
-
-## <a id="c8"></a>C8 — hand-rolled LCG
-
-```rust
-self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-```
-
-A bare linear congruential generator drives the random-common-cause and
-subset refuters. LCG low bits are notoriously non-random and the generator is
-unseedable from outside, so a refutation result cannot be reproduced.
-
-**Fix.** `rand_chacha::ChaCha8Rng` with an explicit seed on the public API. The
-dependency is already in the workspace for `cynepic-testkit`.
-
-No spec — this one is verified by the C7 rewrite plus the existing
-determinism tests.
-
----
-
-## <a id="c10"></a>C10 — degenerate input panics or invents numbers
-
-Three separate paths:
-
-- **Empty arm.** `difference_in_means` substitutes `0.0` for a missing arm's
-  mean. A dataset with no control units returns a confident effect equal to the
-  treated mean.
-- **Mismatched lengths.** `assert_eq!` on caller-supplied input. A service
-  embedding the crate dies on malformed data. CLAUDE.md states library code
-  returns `Result`; this is the counterexample.
-- **`n = 0`.** No guard.
-
-**Fix.** `Result`-returning API; `EstimationError::{EmptyArm, LengthMismatch,
-NoObservations}`. This is also what clears `clippy::indexing_slicing` (104
-violations) and `unwrap_used` (7).
-
-Specs: `c10_single_arm_data_must_not_produce_an_effect`,
-`c10_mismatched_lengths_must_not_panic`,
-`c10_empty_dataset_must_not_produce_an_effect`.
-
----
-
-## <a id="c11"></a>C11 — `CausalDag` does not enforce that it is a DAG
-
-`add_edge` returns `()` and accepts both cycles and self-loops. A type named
-`CausalDag` that holds a cyclic graph invalidates every algorithm built on it:
-d-separation, backdoor search and the counterfactual engine all assume
-acyclicity and will silently produce nonsense or fail to terminate.
-
-The acyclicity check already exists in `cynepic-graph`. It was never applied
-here.
-
-**Fix.** `add_edge` returns `Result<(), DagError::WouldCreateCycle { path }>`.
-
-Specs: `c11_cycles_must_be_rejected_at_construction`,
-`c11_self_loops_must_be_rejected`.
-
----
-
-## <a id="c12"></a>C12 — unknown variables are reported as d-separated
-
-`d_separated` returns `true` for variable names the graph has never heard of.
-`true` means "conditionally independent", so a typo in a variable name reads as
-a *positive* finding of independence — the answer most likely to be acted on.
-
-This is the cheapest finding to fix and among the most dangerous to leave.
-
-**Fix.** `Result<bool, DsepError::UnknownVariable { name }>`.
-
-Spec: `c12_unknown_variable_must_not_be_reported_as_independent`.
-
----
-
-## <a id="validated"></a>Validated
-
-Measured, not asserted. From `cargo run -p cynepic-causal --example
-coverage_report --release`, 300 replications per cell, nominal 95%:
-
-| Cell | Bias | Coverage |
-|---|---|---|
-| benign | +0.0060 | 97.3% |
-| strong-confounding | +0.0057 | 94.7% |
-| weak-overlap | +0.0048 | 95.3% |
-| nonlinear | −0.0012 | 97.0% |
-| heteroskedastic | +0.0086 | 97.0% |
-| heterogeneous-effects | +0.0060 | 96.7% |
-| small-n | +0.0167 | 95.3% |
-| high-dim | +0.0090 | 95.3% |
-
-`LinearATEEstimator::ols_adjusted` achieves nominal coverage on every cell in
-the standard grid, with bias below 0.02 throughout — including under
-heteroskedasticity and outcome nonlinearity, where classical standard errors
-were expected to degrade. C5's HC1/HC3 work remains worth doing for
-adversarial DGPs, but it is not currently a source of wrong answers.
-
-Slight over-coverage (97.3% on benign) means intervals are a little wider than
-they need to be. That is the safe direction and is not a defect.
-
-Seven specs run in the default suite as regression guards rather than
-accusations:
-
-| Guard | What it locks in |
-|---|---|
-| `c5_ols_intervals_must_achieve_nominal_coverage` | OLS coverage on a benign DGP |
-| `c5_coverage_survives_heteroskedasticity` | 97.0% coverage under heteroskedasticity |
-| `metamorphic_duplication_shrinks_se_by_sqrt_two` | diff-in-means variance scales correctly in `n` |
-| `c5_ipw_duplication_shrinks_se_by_sqrt_two` | IPW variance scales correctly in `n` |
-| `metamorphic_scaling_outcome_scales_effect` | estimates are scale-equivariant |
-| `metamorphic_irrelevant_covariate_does_not_move_estimate` | the solver does not fit noise |
-| `c1_collinear_column_must_not_change_the_estimate` | rank deficiency does not move the point estimate |
-
-Each of these began as an `#[ignore]`d accusation and was moved here after
-measurement showed the behaviour was already correct. The ratchet enforces the
-distinction in both directions: an open spec that starts passing fails the
-build, so nothing sits behind an `#[ignore]` pretending to be outstanding
-work.
-
-**These rows are the reason the rest of this document is credible.** A report
-that found nothing wrong would not be worth reading, and a harness that could
-only confirm success would not be a harness.
+## A note on the DGP itself
+
+Fixing the estimators exposed a defect in the *test harness*: `overlap` was
+applied to an unstandardised assignment index, so its meaning drifted with `p`
+and `confounding`. Raising `p` from 3 to 25 silently turned a well-overlapped
+world into a positivity violation, which meant the `high-dim` cell was measuring
+overlap while claiming to measure dimensionality. The index is now standardised
+by `sqrt(p)` and `overlap = 1.0` really is benign.
+
+Related, and documented in `cynepic_testkit::dgp`: **effective sample size is
+non-monotonic in overlap** and cannot diagnose a positivity violation alone. It
+collapses to ~1 at `overlap = 0.03` and then *recovers to 613* at
+`overlap = 0.01`, where 95% of units are extreme — because under
+near-deterministic assignment almost every unit lands in the arm it was nearly
+certain to get, so its weight is ≈1. A monitor thresholding on ESS alone passes
+the worst case and fails the middling one. The extreme-propensity fraction is
+monotone and is the diagnostic to threshold on.
 
 ## Reproducing
 
 ```bash
-cargo test -p cynepic-causal --test findings -- --ignored     # watch them fail
+cargo test -p cynepic-causal --test findings                  # closed findings
+cargo test -p cynepic-causal --test findings -- --ignored     # C14, still failing
 cargo run  -p cynepic-causal --example coverage_report --release
-./scripts/findings-ratchet.sh                                  # the CI gate
+./scripts/findings-ratchet.sh                                 # the CI gate
 ```
 
 Every DGP is seeded with ChaCha8, so any failure is reproducible from the seed

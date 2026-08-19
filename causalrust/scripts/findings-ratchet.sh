@@ -21,7 +21,7 @@ cd "$(dirname "$0")/.."
 
 # Open specs at the last ratchet. Lower this with each fix; never raise it
 # without a corresponding docs/FINDINGS.md entry.
-BASELINE=13
+BASELINE=2
 
 SPEC_FILE="crates/cynepic-causal/tests/findings.rs"
 
