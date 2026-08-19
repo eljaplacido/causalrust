@@ -15,10 +15,20 @@
 > - `cynepic-guardian` — circuit breaker, rate limiter and loop detector are
 >   property-tested over operation sequences ([G1](#g1), closed).
 >
-> Two crates remain unmeasured: `cynepic-graph` and `cynepic-core`. Their tests
-> pass, which says the code does what its author intended — not that the
-> intention was right. That distinction is what the measured crates keep
-> demonstrating.
+> - `cynepic-graph` — **no findings.** Fifteen execution properties hold:
+>   determinism across runs and across rebuilds, `max_steps` as a hard bound
+>   (exactly `n` node executions at every budget tested), checkpoint resume
+>   reproducing an uninterrupted run at every cut point and across a JSON round
+>   trip, budget charged against the original rather than reset on resume, node
+>   timeouts bounding the wait, and every started node reporting exactly one
+>   terminal event.
+>
+> Five of six publishable crates are now measured. `cynepic-core` is types and
+> traits plus `special`, which is checked against closed forms.
+>
+> **A crate with no findings is a result, not an absence of one** — but only
+> because the properties were written to be capable of failing, and four other
+> crates written the same way did fail.
 
 Single source of truth for every finding in the workspace. Everything else that
 mentions them — the `allow` entries in `[workspace.lints]`, the spec names in
@@ -31,6 +41,7 @@ restate the detail.
 | B | `cynepic-bayes` | `tests/calibration.rs` |
 | R | `cynepic-router` | `tests/routing_accuracy.rs` |
 | G | `cynepic-guardian` | `tests/guardrails.rs` |
+| — | `cynepic-graph` | `tests/execution_properties.rs` (no findings) |
 
 ## How a finding moves
 
