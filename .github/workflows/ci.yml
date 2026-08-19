@@ -90,6 +90,14 @@ jobs:
       - name: Clippy (no default features)
         run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
+      # Benchmarks are built, never timed, in CI. Shared runners have noisy
+      # neighbours and their wall-clock variance swamps the differences worth
+      # detecting, so a timing gate here would produce false alarms until people
+      # stopped reading it. Building them stops them rotting against API
+      # changes, which is the failure that actually happens.
+      - name: Benchmarks compile
+        run: cargo bench --workspace --no-run
+
       - name: Docs build clean
         env:
           RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links"

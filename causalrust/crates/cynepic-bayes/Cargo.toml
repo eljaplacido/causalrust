@@ -20,5 +20,11 @@ chrono = { workspace = true }
 [dev-dependencies]
 approx = { workspace = true }
 
+criterion = { workspace = true }
+
+[[bench]]
+name = "samplers"
+harness = false
+
 [lints]
 workspace = true

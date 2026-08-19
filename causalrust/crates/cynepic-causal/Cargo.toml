@@ -22,5 +22,11 @@ approx = { workspace = true }
 # so it never reaches a consumer of this crate.
 cynepic-testkit = { workspace = true }
 
+criterion = { workspace = true }
+
+[[bench]]
+name = "estimators"
+harness = false
+
 [lints]
 workspace = true

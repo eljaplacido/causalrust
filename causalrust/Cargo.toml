@@ -72,6 +72,10 @@ rand_chacha = "0.9"
 
 # Testing
 approx = "0.5"
+# Benchmarking. `default-features = false` drops the `plotters` HTML report and
+# its transitive image stack, which we do not use and which dominates the
+# dev-dependency build time.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # ---------------------------------------------------------------------------
 # Workspace lint policy
