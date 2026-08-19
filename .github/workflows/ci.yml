@@ -393,6 +393,16 @@ jobs:
   # ---------------------------------------------------------------------------
   ci-ok:
     name: CI
+    # This job aggregates results and never checks out the repository, so the
+    # workflow-level `working-directory: causalrust` does not exist here and
+    # bash cannot start in it. Overridden to the workspace root.
+    #
+    # The failure mode is worth remembering: every other job went green and this
+    # one still failed, which blocks the merge while pointing at nothing. It had
+    # been failing on every run since the gate was written.
+    defaults:
+      run:
+        working-directory: .
     if: always()
     needs:
       - test
