@@ -50,7 +50,7 @@ causalrust/                    # Git root
 ```bash
 cd causalrust/causalrust
 cargo build --workspace            # Build all crates
-cargo test --workspace --all-features   # 235 tests
+cargo test --workspace --all-features   # 273 tests
 cargo test -p cynepic-core         # Test single crate
 cargo test -p cynepic-guardian --no-default-features  # Guardian without rego
 cargo test -p cynepic-guardian --features rego         # Guardian with rego
@@ -151,11 +151,11 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | guardian | Solid | 30 | Policy chains, Rego v1 (+ explicit v0 opt-in), circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
 | causal | **Validated** | 89 + 32 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
 | router | Solid | 17 | Keyword classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics (F1) |
-| bayes | Solid | 20 | 4 conjugate priors, 3 MCMC samplers, belief tracker, tool reliability |
+| bayes | **Calibrated** | 30 + 12 calibration | 4 conjugate priors with **exact** quantile intervals, 3 MCMC samplers (SBC-verified), belief tracker, tool reliability |
 | graph | Solid | 10 | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
-| testkit | Internal | 21 | Ground-truth DGPs, coverage/bias/RMSE harness, metamorphic relations (`publish = false`) |
+| testkit | Internal | 37 | Ground-truth DGPs, coverage/bias/RMSE harness, metamorphic relations, Bayesian calibration + SBC (`publish = false`) |
 
-**Total: 235 tests, 2 open findings specs, 0 warnings.**
+**Total: 273 tests, 2 open findings specs, 0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now
@@ -177,9 +177,15 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 > its interval, and `Diagnostics` from the fit. `ATEResult` has no public
 > constructor, so a number cannot be separated from what it means.
 >
+> **`cynepic-bayes` is calibrated.** Credible-interval coverage is nominal for
+> every conjugate prior, and both MCMC samplers pass simulation-based
+> calibration. `BetaBinomial`'s interval was a normal approximation to a Beta
+> that under-covered by 8.4 points at p=0.5; it now uses the exact quantile.
+>
 > ```bash
 > ./scripts/findings-ratchet.sh    # the CI gate: count down only, all must fail
 > cargo run -p cynepic-causal --example coverage_report --release
+> cargo run -p cynepic-bayes  --example calibration_report --release
 > ```
 
 ### Known Gaps

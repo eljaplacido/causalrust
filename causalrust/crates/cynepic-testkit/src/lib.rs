@@ -22,6 +22,10 @@
 //!   replications.
 //! - [`metamorphic`] — relations that must hold for *any* correct estimator,
 //!   regardless of the data.
+//! - [`calibration`] — the Bayesian counterpart: credible-interval coverage
+//!   under draws from the prior, and simulation-based calibration for
+//!   samplers, whose rank histogram diagnoses *how* a posterior is wrong
+//!   rather than only that it is.
 //!
 //! ## The metric that matters
 //!
@@ -43,9 +47,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod calibration;
 pub mod dgp;
 pub mod metamorphic;
 pub mod validate;
 
+pub use calibration::{
+    CalibrationReport, SbcReport, credible_coverage, simulation_based_calibration,
+};
 pub use dgp::{Dataset, Dgp, DgpGrid, GroundTruth};
 pub use validate::{CoverageReport, Replication, ValidationHarness};

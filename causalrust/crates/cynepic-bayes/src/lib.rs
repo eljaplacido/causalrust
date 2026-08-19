@@ -24,5 +24,6 @@
 pub mod belief;
 pub mod priors;
 pub mod sampler;
+pub mod special;
 pub mod streaming;
 pub mod tool_belief;

@@ -19,6 +19,10 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+# Calibration harness: credible-interval coverage and simulation-based
+# calibration. Internal, publish = false, so it never reaches a consumer.
+cynepic-testkit = { workspace = true }
+rand_chacha = { workspace = true }
 
 criterion = { workspace = true }
 

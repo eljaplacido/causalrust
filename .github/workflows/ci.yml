@@ -313,11 +313,21 @@ jobs:
       # that can come back bad, which is exactly why it is worth publishing —
       # a benchmark you would not publish when it made you look slow is not
       # evidence of anything.
-      - name: Upload coverage table
+      - name: Bayesian calibration table
+        run: cargo run -p cynepic-bayes --example calibration_report --release
+          | tee calibration-table.txt
+
+      # Both tables are published on every run. They are the only numbers in
+      # this repository that can come back bad, which is exactly why they are
+      # worth publishing: a measurement you would suppress when it was
+      # unflattering is not evidence.
+      - name: Upload measurement tables
         uses: actions/upload-artifact@v4
         with:
-          name: estimator-coverage
-          path: causalrust/coverage-table.txt
+          name: measured-calibration
+          path: |
+            causalrust/coverage-table.txt
+            causalrust/calibration-table.txt
 
   # ---------------------------------------------------------------------------
   # Single required status check. Branch protection points at this one job, so
