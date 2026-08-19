@@ -1,6 +1,10 @@
 [package]
 name = "cynepic-bayes"
-description = "Probabilistic programming: conjugate priors, MCMC sampling, and incremental belief updating"
+description = "Bayesian inference with exact conjugate posteriors, calibrated credible intervals, and MCMC samplers verified by simulation-based calibration"
+readme = "../../README.md"
+keywords = ["bayesian", "mcmc", "statistics", "conjugate-prior", "calibration"]
+categories = ["science", "mathematics", "algorithms"]
+documentation = "https://docs.rs/cynepic-bayes"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

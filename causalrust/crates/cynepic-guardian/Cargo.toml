@@ -1,6 +1,10 @@
 [package]
 name = "cynepic-guardian"
-description = "AI policy guardrails: Rego + Cedar policy evaluation, circuit-breaker, and audit trail"
+description = "Policy guardrails for AI systems: Rego evaluation, circuit breaker, rate limiting, loop detection, HITL escalation, and an append-only audit trail"
+readme = "../../README.md"
+keywords = ["policy", "guardrails", "circuit-breaker", "rate-limiting", "audit"]
+categories = ["development-tools", "asynchronous"]
+documentation = "https://docs.rs/cynepic-guardian"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -3,7 +3,7 @@
 //! AI policy guardrails for the cynepic-rs workspace.
 //!
 //! Provides a composable policy evaluation framework that chains multiple policy
-//! engines (Rego via `regorus`, Cedar, custom rules) with a unified audit trail
+//! engines (Rego via `regorus`, plus custom rules) with a unified audit trail
 //! and circuit-breaker pattern for LLM output interception.
 //!
 //! # Architecture

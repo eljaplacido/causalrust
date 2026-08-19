@@ -1,6 +1,10 @@
 [package]
 name = "cynepic-causal"
-description = "Causal inference engine: DAG representation, identification, estimation, and refutation"
+description = "Causal inference with validated estimators: DAG, d-separation, backdoor and front-door identification, OLS/IPW/2SLS estimation with measured interval coverage, and refutation"
+readme = "../../README.md"
+keywords = ["causal-inference", "statistics", "econometrics", "dag", "treatment-effect"]
+categories = ["science", "mathematics", "algorithms"]
+documentation = "https://docs.rs/cynepic-causal"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
