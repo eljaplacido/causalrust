@@ -52,7 +52,7 @@ Running it
 
 Then, on the same machine:
 
-    cargo run -p cynepic-graph --example latency_report --release
+    cargo run -p cynepic-graph --example graph_latency --release
 
 Comparing numbers from different machines is meaningless, so run both or
 neither.
@@ -68,7 +68,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-# Matches `crates/cynepic-graph/examples/latency_report.rs`.
+# Matches `crates/cynepic-graph/examples/graph_latency.rs`.
 SIZES = ((5, 400), (20, 300), (100, 150))
 
 
@@ -131,7 +131,7 @@ def main() -> int:
         p99 = times[int((len(times) - 1) * 0.99)]
         print(f"  {nodes:>6} {fmt(p50):>11} {fmt(p99):>11} {fmt(p50 / nodes):>14}")
 
-    print("\nCompare against `cargo run -p cynepic-graph --example latency_report")
+    print("\nCompare against `cargo run -p cynepic-graph --example graph_latency")
     print("--release` on this same machine. A cross-machine ratio is not a result.")
     return 0
 

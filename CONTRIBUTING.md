@@ -118,6 +118,35 @@ investigate — not a fixture to overwrite.** Either our implementation drifted 
 the reference library changed behaviour, and both are worth knowing before the
 evidence is quietly replaced.
 
+## Naming examples and benchmarks
+
+**Example binaries must have workspace-unique names.** Cargo writes every
+example in the workspace to one `target/debug/examples/` directory, keyed by
+name and not by crate. Four crates each had an example called `latency_report`;
+on Linux that silently works, and on Windows the second linker to reach
+`latency_report.exe` fails with `LNK1104: cannot open file` because the first
+still holds it.
+
+It is a race, so it is intermittent: CI stayed green with two colliding
+examples and failed with three. Prefix with the crate — `causal_latency`,
+`bayes_latency`, `graph_latency`, `guardian_latency`.
+
+## Comparison harnesses
+
+Cross-implementation numbers live in `scripts/compare_*.py`, one per reference
+implementation, each printing the versions it used. Three rules:
+
+1. **Both halves on one machine, or neither.** A cross-machine ratio is not a
+   result, and every harness says so in its own output.
+2. **Assert the work actually happened.** The LangGraph fixture checks the node
+   count; a framework that skipped nodes would otherwise look wonderfully fast.
+3. **Publish the cells where we lose.** The Beta credible interval was measured
+   at 1.2x *slower* than scipy, and publishing that is what led to the fix. A
+   table with no losses is advertising.
+
+Nothing is installed into a contributor's environment: langgraph runs from a
+throwaway venv, OPA from a downloaded binary.
+
 ## Lint policy
 
 `[workspace.lints]` in `causalrust/Cargo.toml` turns this project's conventions

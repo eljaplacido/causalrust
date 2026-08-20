@@ -1,7 +1,7 @@
 //! Our half of the README's "Beta conjugate prior update vs PyMC" row.
 //!
 //! ```bash
-//! cargo run -p cynepic-bayes --example latency_report --release
+//! cargo run -p cynepic-bayes --example bayes_latency --release
 //! ```
 //!
 //! # The row this measures is not a fair comparison, and that is the finding

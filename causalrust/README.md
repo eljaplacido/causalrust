@@ -152,9 +152,8 @@ comparison" are kept for the same reason they are marked — so a reader who has
 met the claim elsewhere finds out here that it does not hold up.
 
 Reproduce them with `scripts/compare_networkx.py`, `compare_langgraph.py`,
-`compare_opa.py`, and the `latency_report` example in `cynepic-causal`,
-`cynepic-bayes`, `cynepic-graph` and `cynepic-guardian` — all on one machine —
-and see
+`compare_opa.py`, and the `causal_latency`, `bayes_latency`, `graph_latency`
+and `guardian_latency` examples — all on one machine — and see
 [docs/roadmap.md](docs/roadmap.md#benchmarking-what-still-has-to-be-proven) for
 what each remaining row would take to prove.
 

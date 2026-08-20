@@ -1,7 +1,7 @@
 //! Per-step dispatch latency, and our half of the README's LangGraph row.
 //!
 //! ```bash
-//! cargo run -p cynepic-graph --example latency_report --release
+//! cargo run -p cynepic-graph --example graph_latency --release
 //! ```
 //!
 //! # What makes this comparison fair, and what would not have

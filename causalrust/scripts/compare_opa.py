@@ -26,7 +26,7 @@ Running it
 
 Then, on the same machine:
 
-    cargo run -p cynepic-guardian --example latency_report --release --features rego
+    cargo run -p cynepic-guardian --example guardian_latency --release --features rego
 
 Use the ``_static`` build or the matching libc build for your platform; the
 download URL above is for linux/arm64.
@@ -45,7 +45,7 @@ import urllib.request
 from pathlib import Path
 
 # Kept identical to `POLICY` in
-# crates/cynepic-guardian/examples/latency_report.rs. If these drift the
+# crates/cynepic-guardian/examples/guardian_latency.rs. If these drift the
 # comparison is meaningless, which is why the policy is short enough to diff by
 # eye.
 POLICY = """
@@ -170,7 +170,7 @@ def main() -> int:
             )
             print("  The rest is HTTP, JSON and the loopback hop.")
             print("\n  Compare against `cargo run -p cynepic-guardian --example")
-            print("  latency_report --release --features rego` on this machine, and")
+            print("  guardian_latency --release --features rego` on this machine, and")
             print("  quote BOTH ratios: one is a claim about the policy engine, the")
             print("  other is a claim about not running a sidecar. They are")
             print("  different claims and only one of them is about this code.")

@@ -1,7 +1,7 @@
 //! Guardrail latency, and our half of the README's OPA row.
 //!
 //! ```bash
-//! cargo run -p cynepic-guardian --example latency_report --release --features rego
+//! cargo run -p cynepic-guardian --example guardian_latency --release --features rego
 //! ```
 //!
 //! # The row this measures is real, but it does not measure what it looks like

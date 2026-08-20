@@ -27,7 +27,7 @@ Running it
 
 Then, on the same machine:
 
-    cargo run -p cynepic-causal --example latency_report --release
+    cargo run -p cynepic-causal --example causal_latency --release
 
 Comparing numbers from different machines is meaningless, so run both or
 neither. The CPU is printed by the Rust side; record it with any figure you
@@ -41,7 +41,7 @@ import time
 
 import networkx as nx
 
-# Matches `latency_report.rs`. A chain with the first half of the nodes in the
+# Matches `causal_latency.rs`. A chain with the first half of the nodes in the
 # conditioning set: long paths, and enough conditioning to make the traversal do
 # real work.
 SIZES = (10, 100, 500)
@@ -96,7 +96,7 @@ def main() -> int:
             f"{fmt(percentile(times, 0.99)):>10} {reps:>9}"
         )
 
-    print("\nCompare against `cargo run -p cynepic-causal --example latency_report")
+    print("\nCompare against `cargo run -p cynepic-causal --example causal_latency")
     print("--release` on this same machine. A cross-machine ratio is not a result.")
     return 0
 

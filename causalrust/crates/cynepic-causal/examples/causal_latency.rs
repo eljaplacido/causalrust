@@ -1,7 +1,7 @@
 //! Per-call latency percentiles and allocation counts.
 //!
 //! ```bash
-//! cargo run -p cynepic-causal --example latency_report --release
+//! cargo run -p cynepic-causal --example causal_latency --release
 //! ```
 //!
 //! # Why percentiles and not a mean

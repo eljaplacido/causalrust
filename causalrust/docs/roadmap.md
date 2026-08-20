@@ -317,7 +317,8 @@ recording because the suite looked complete before the mutation was tried.
 For an embedded decision layer the p99 is what a caller feels; the mean is what
 a marketing table quotes.
 
-- [x] `examples/latency_report` — per-call p50/p95/p99/max, not criterion's
+- [x] `cynepic-causal/examples/causal_latency` — per-call p50/p95/p99/max,
+      not criterion's
       central estimate. criterion is the right tool for detecting *regressions*
       in throughput; it times batches, so a per-call tail is not recoverable
       from it. Hence a separate harness.
@@ -340,7 +341,7 @@ a marketing table quotes.
 The claim that "no GC pauses, embeddable in any service" rests on, and is
 partly measured.
 
-- [x] Peak RSS reported by `examples/latency_report`, read from
+- [x] Peak RSS reported by `causal_latency`, read from
       `/proc/self/status`
 - [x] Tails are tight — p99 within a few percent of p50 on every row — which is
       the evidence that these paths are not allocation-dominated, and that is
@@ -434,7 +435,7 @@ Still outstanding:
       same question until that was fixed.
 - [x] **LangGraph (graph) — measured, and understated by an order of
       magnitude.** `scripts/compare_langgraph.py` against
-      `crates/cynepic-graph/examples/latency_report`, one machine,
+      `crates/cynepic-graph/examples/graph_latency`, one machine,
       langgraph 1.2.11:
 
       | nodes | langgraph/step | cynepic/step | speedup |
