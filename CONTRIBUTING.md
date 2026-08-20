@@ -18,10 +18,13 @@ Two consequences you will meet immediately:
 - Statistical code needs a **coverage** or **calibration** measurement, not just
   a unit test with a tolerance. `docs/FINDINGS.md` exists because thirty passing
   unit tests coexisted with an estimator at 0.0% interval coverage.
-- Performance claims need a benchmark that produced them. The figures in
-  `causalrust/README.md` are marked as **assumed**; `docs/roadmap.md` breaks
-  down what would have to exist to prove them. Do not add more, and do not quote
-  the marked ones.
+- Performance claims need a benchmark that produced them. Every row of the
+  table in `causalrust/README.md` is now labelled **measured**, **assumed**, or
+  **not a fair comparison**, and the measured ones come from committed harnesses
+  (`scripts/compare_*.py` plus the `*_latency` examples). Do not add an
+  unlabelled row, and do not quote an assumed one. Two of the four assumptions
+  that were measured turned out wrong in *opposite* directions, which is why the
+  labels are not decoration.
 - Cross-implementation claims need a **parity** test first. "1000x faster than
   NetworkX" is not a claim until "identical to NetworkX" is true.
 

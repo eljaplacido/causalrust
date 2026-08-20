@@ -54,7 +54,8 @@ causalrust/                    # Git root
 ```bash
 cd causalrust/causalrust
 cargo build --workspace            # Build all crates
-cargo test --workspace --all-features   # 328 tests
+cargo test --workspace --all-features   # 395 tests (404 with --no-default-features,
+                                        # which adds the pyo3 binding suite)
 cargo test -p cynepic-core         # Test single crate
 cargo test -p cynepic-guardian --no-default-features  # Guardian without rego
 cargo test -p cynepic-guardian --features rego         # Guardian with rego
@@ -158,7 +159,8 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | graph | **Measured, no findings** | 10 + 15 properties | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 | testkit | Internal | 44 | Ground-truth DGPs, coverage harness, metamorphic relations, Bayesian calibration + SBC, 96-query labelled routing corpus (`publish = false`) |
 
-**Total: 350+ tests, 4 open findings specs across 5 measured crates, 0 warnings.**
+**Total: 395 tests (404 under `--no-default-features`), 4 open findings specs
+across 5 measured crates, 0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now

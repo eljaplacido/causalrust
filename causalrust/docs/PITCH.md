@@ -48,21 +48,54 @@ Each crate is independently publishable. Use one, use all, or compose them into 
 
 - **Causal reasoning** — "If I change this config, what will happen?" (not just "what happened before?")
 - **Uncertainty quantification** — "How confident am I in this action?" (not just "what's the most likely outcome?")
-- **Policy enforcement** — "Am I allowed to do this?" (evaluated in <1ms, not after the fact)
+- **Policy enforcement** — "Am I allowed to do this?" (measured at 5.6µs in-process, not after the fact)
 - **Auditable workflows** — "Show me every decision, who approved it, and why" (EU AI Act, SOC2, HIPAA)
 
 cynepic-rs is the first toolkit that packages all four as composable, embeddable Rust libraries.
 
-### The Performance Gap Is Real
+### The Performance Gap, Measured
 
-| Operation | Python (typical) | cynepic-rs (Rust) | Speedup |
-|-----------|-----------------|-------------------|---------|
-| Causal DAG identification | ~50ms (DoWhy) | <1ms (petgraph) | 50-100x |
-| Conjugate prior update | ~5ms (PyMC) | <1μs (pure math) | 5,000x |
-| Rego policy evaluation | ~2ms (OPA sidecar) | <0.25ms (regorus embedded) | 8x |
-| Workflow routing decision | ~10ms (LangGraph) | <0.1ms (StateGraph) | 100x |
+Everything below comes from a committed harness run on one machine — the Python
+side from `scripts/compare_{networkx,langgraph,opa}.py`, the Rust side from the
+`*_latency` examples. Reproduce it or discount it.
 
-These numbers matter when you're processing 10,000 agent decisions per second, running real-time A/B tests, or enforcing policy on every LLM output in a streaming pipeline.
+| Operation | Python | cynepic-rs | Speedup |
+|-----------|--------|------------|---------|
+| DAG d-separation, 100 nodes | 49.3µs (NetworkX) | 4.6µs (petgraph) | **11x** |
+| Workflow step | 58.3µs (LangGraph) | 0.57µs (StateGraph) | **102x** |
+| Policy evaluation, vs sidecar | 320.1µs (OPA over HTTP) | 5.6µs (regorus) | **57x** |
+| Policy evaluation, vs engine | 17.6µs (OPA's evaluator) | 5.6µs (regorus) | **3.1x** |
+| Beta credible interval | 42.4µs (scipy/Boost) | 14.4µs | **2.9x** |
+
+Two things this table is careful about, because an earlier version of it was
+not:
+
+**The policy row is two rows.** OPA reports its own
+`timer_rego_query_eval_ns`, and **94.5% of a sidecar round trip is HTTP, JSON
+and the loopback hop** — not policy evaluation. Deleting a sidecar is worth 57x
+and is a real win; it is not a claim about regorus, which is worth 3.1x.
+Quoting the combined figure as an engine comparison would overstate it
+thirty-fold.
+
+**These are dispatch and arithmetic, not end-to-end workloads.** LangGraph
+carries checkpointing, a reducer model and interrupt support through every
+step, so part of that 102x is machinery rather than waste. A dispatch win is
+not a claim that one library replaces the other.
+
+Two rows that used to be here have been removed rather than measured, because
+no fair version of them exists: a Beta conjugate update is two additions and
+PyMC has no such primitive, and a circuit-breaker check is an atomic load
+against a Python attribute access. Both are noted in
+[`../README.md`](../README.md) so a reader who met the claim elsewhere finds
+out here that it does not hold up.
+
+**And speed is not the main reason to use this.** For causal inference the
+product is a number someone will act on. `ols_adjusted` and `ipw` achieve
+nominal confidence-interval coverage on every cell of a nine-cell DGP grid;
+the estimators refuse rather than returning a figure when the data cannot
+support one, at a measured false-answer rate of zero. That is the claim worth
+making, and [`FINDINGS.md`](FINDINGS.md) records what it cost to be able to
+make it.
 
 ### The Regulatory Tailwind
 
@@ -82,12 +115,12 @@ cynepic-guardian's append-only audit trail, policy chain evaluation, and circuit
 ### 1. Causal A/B Testing at Scale
 **Who:** Data platforms, experimentation teams, growth engineering
 **Problem:** Standard A/B tests assume random assignment. Real-world experiments have confounders — users self-select, seasonality shifts, marketing campaigns overlap.
-**cynepic solution:** `cynepic-causal` identifies confounders via the backdoor criterion, adjusts estimates accordingly, and runs automated refutation tests. `cynepic-bayes` provides Bayesian stopping rules instead of fixed-horizon p-values. *(Speed claims in this document are unverified design targets — see [../README.md](../README.md#performance--unverified).)*
+**cynepic solution:** `cynepic-causal` identifies confounders via the backdoor criterion, adjusts estimates accordingly, and runs automated refutation tests. `cynepic-bayes` provides Bayesian stopping rules instead of fixed-horizon p-values. Interval coverage is measured on a nine-cell grid, not assumed — see [FINDINGS.md](FINDINGS.md).
 
 ### 2. AI Agent Guardrails
 **Who:** Any team deploying autonomous AI agents (customer service, code generation, financial operations)
 **Problem:** An agent with tool access can do real damage. Policy evaluation must be faster than the agent's action loop.
-**cynepic solution:** `cynepic-guardian` evaluates Rego policies in <0.25ms — embedded in the agent's execution path, not as a sidecar. Circuit breaker trips after repeated failures. Every decision is audit-logged with UUID, timestamp, and full context. `cynepic-graph` orchestrates the workflow with compile-time type safety (the Rust compiler *proves* every branch is handled).
+**cynepic solution:** `cynepic-guardian` evaluates a Rego policy in **5.6µs** measured, embedded in the agent's execution path rather than as a sidecar — and the always-on guardrails cost less again: a circuit-breaker check is 16ns, a rate-limiter check 112ns. That matters because a guardrail sits on *every* call by construction, and one that costs more than the thing it guards gets sampled instead of applied. Circuit breaker trips after repeated failures. Every decision is audit-logged with UUID, timestamp, and full context. `cynepic-graph` orchestrates the workflow with compile-time type safety (the Rust compiler *proves* every branch is handled).
 
 ### 3. Adaptive Clinical Trial Monitoring
 **Who:** Pharma, biotech, CROs
@@ -97,7 +130,22 @@ cynepic-guardian's append-only audit trail, policy chain evaluation, and circuit
 ### 4. LLM Cost Optimization
 **Who:** Any company spending >$10K/month on LLM APIs
 **Problem:** Sending every query to GPT-4/Claude is expensive. Most queries are simple and could be handled by cheaper models.
-**cynepic solution:** `cynepic-router` classifies query complexity into Cynefin domains. "Clear" queries → cheap local model. "Complicated" → mid-tier model with causal tools. "Complex" → expensive frontier model. Cost tiers are configurable. Typically saves 40-60% on API spend with no quality degradation on simple queries.
+**cynepic solution:** `cynepic-router` classifies query complexity into Cynefin domains. "Clear" queries → cheap local model. "Complicated" → mid-tier model with causal tools. "Complex" → expensive frontier model. Cost tiers are configurable.
+
+**What the classifier is actually worth, measured.** `LexicalClassifier` scores
+**macro F1 0.656** and **0.625 recall on Chaotic** under 4-fold
+cross-validation against a 96-query labelled corpus — against 0.25 for random
+guessing, and against **0.290 / 0.000** for the keyword classifier it replaces.
+That is useful and it is not accurate enough to route unsupervised: no saving
+figure is claimed here, because none has been measured, and "no quality
+degradation" would be false at 0.656.
+
+What makes it deployable anyway is that it **abstains**. Input it cannot read
+returns `Disorder` at exactly zero confidence with high entropy, which is the
+signal an escalation policy triggers on, and nothing contentless is ever
+answered with the confidence that authorises answering from cache. A confident
+wrong route is worse than an admitted unknown at every ratio. See
+[FINDINGS.md](FINDINGS.md#r1).
 
 ### 5. MLOps Pipeline Governance
 **Who:** ML platform teams, data engineering
@@ -107,7 +155,7 @@ cynepic-guardian's append-only audit trail, policy chain evaluation, and circuit
 ### 6. Real-Time Fraud / Anomaly Detection
 **Who:** FinTech, payments, cybersecurity
 **Problem:** Traditional rule engines are brittle. ML models produce scores without uncertainty bounds. False positives are expensive.
-**cynepic solution:** `cynepic-bayes` maintains a belief state per entity that updates in real-time as new transactions arrive. `cynepic-guardian` enforces risk thresholds with circuit breakers (auto-block if anomaly rate spikes). The pipeline is allocation-light and synchronous, though its latency is not yet measured — see the performance warning in [../README.md](../README.md#performance--unverified).
+**cynepic solution:** `cynepic-bayes` maintains a belief state per entity that updates in real-time as new transactions arrive. `cynepic-guardian` enforces risk thresholds with circuit breakers (auto-block if anomaly rate spikes). The pipeline is allocation-light and synchronous; the per-call latencies of its parts are measured (`guardian_latency`, `bayes_latency`), though this end-to-end pipeline as a whole is not.
 
 ---
 
@@ -117,7 +165,7 @@ cynepic-guardian's append-only audit trail, policy chain evaluation, and circuit
 
 cynepic-rs is **not a replacement** — it's an **accelerator and embedding layer**. Python libraries have richer APIs and larger communities. cynepic-rs wins on:
 
-- **Performance**: *unverified* — see the warning in [../README.md](../README.md#performance--unverified)
+- **Performance**: measured per operation against NetworkX, LangGraph, OPA and scipy — see the table above and [../README.md](../README.md). Two of the four original assumptions were wrong in opposite directions, which is why the labels matter.
 - **Embeddability**: Compiles to a static library, WASM module, or Python extension — no runtime, no GC, no interpreter
 - **Type safety**: The Rust compiler catches errors that Python finds at runtime (or never)
 - **Memory safety**: No segfaults, no data races, no buffer overflows — critical for security-sensitive policy evaluation
@@ -150,7 +198,7 @@ Use individual crates in your Rust services. Each crate has zero-config defaults
 ```bash
 pip install cynepic  # (planned — PyO3 bindings)
 ```
-Drop-in acceleration for DoWhy causal identification, PyMC conjugate updates and OPA policy evaluation, via the PyO3 bindings. Speedup figures are unverified design targets — see [../README.md](../README.md#performance--unverified).
+Drop-in acceleration for DoWhy causal identification and OPA policy evaluation, via the PyO3 bindings. The OPA comparison is measured (57x against a sidecar, 3.1x against its evaluator); DoWhy is not. PyMC is deliberately not claimed — a conjugate update is two additions and PyMC has no equivalent primitive, so no fair comparison exists.
 
 ### For AI Agent Builders
 Configure cynepic-mcp as an MCP tool server. Your Claude/GPT/local agent gets five new tools: `classify_query`, `estimate_treatment_effect`, `bayesian_update`, `evaluate_policy`, `build_causal_dag`. The agent can now reason causally, quantify uncertainty, and check policies — without any Rust code.
