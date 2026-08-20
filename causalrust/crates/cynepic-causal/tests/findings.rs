@@ -592,6 +592,7 @@ fn c12_unknown_variable_is_an_error() {
             assert_eq!(name, "Xx");
             assert!(known.contains(&"X".to_string()), "known: {known:?}");
         }
+        other => panic!("expected UnknownVariable, got {other}"),
     }
 }
 

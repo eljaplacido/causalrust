@@ -348,3 +348,66 @@ fn fixtures_record_their_provenance() {
         );
     }
 }
+
+/// Overlapping query sets must be an error, matching `networkx`.
+///
+/// Found by this parity work: `networkx.is_d_separator` raises
+/// `NetworkXError: The sets are not disjoint` when the conditioning set
+/// contains an endpoint, and we returned `Ok(true)`.
+///
+/// `true` means "conditionally independent". For a malformed query that is not
+/// a wrong answer so much as an *affirmative* one — the same failure shape as
+/// C12, where a typo produced a positive independence finding. D-separation is
+/// defined for three disjoint sets; outside that it has no answer to give.
+///
+/// `BackdoorCriterion::validate` was never affected in the dangerous direction:
+/// it answered `false` for an adjustment set containing the treatment or the
+/// outcome, which is the safe verdict. Tightening `d_separated` would have
+/// turned that `false` into an error, so `validate` now screens for the case
+/// itself — "may I adjust for this set?" has a truthful `no`, where "are these
+/// two variables independent given a set containing one of them?" has no answer
+/// at all. Both halves are pinned below.
+#[test]
+fn overlapping_query_sets_are_rejected_like_networkx() {
+    use cynepic_causal::error::DsepError;
+    use cynepic_causal::identify::BackdoorCriterion;
+
+    let mut dag = CausalDag::new();
+    dag.add_edge("W", "T").expect("acyclic");
+    dag.add_edge("W", "Y").expect("acyclic");
+    dag.add_edge("T", "Y").expect("acyclic");
+
+    let with_t: HashSet<String> = ["T".to_string()].into_iter().collect();
+    let with_y: HashSet<String> = ["Y".to_string()].into_iter().collect();
+
+    assert!(
+        matches!(
+            d_separated(&dag, "T", "Y", &with_t),
+            Err(DsepError::OverlappingSets { .. })
+        ),
+        "conditioning on the source must be rejected, not answered `true`"
+    );
+    assert!(matches!(
+        d_separated(&dag, "T", "Y", &with_y),
+        Err(DsepError::OverlappingSets { .. })
+    ));
+    assert!(
+        matches!(
+            d_separated(&dag, "T", "T", &HashSet::new()),
+            Err(DsepError::OverlappingSets { .. })
+        ),
+        "x == y is the degenerate case of the same malformed query"
+    );
+
+    // Identification was and remains unaffected.
+    assert!(
+        !BackdoorCriterion::validate(&dag, "T", "Y", &with_t).expect("known names"),
+        "an adjustment set containing the treatment must not validate"
+    );
+    assert!(
+        !BackdoorCriterion::validate(&dag, "T", "Y", &with_y).expect("known names"),
+        "nor one containing the outcome"
+    );
+    let good: HashSet<String> = ["W".to_string()].into_iter().collect();
+    assert!(BackdoorCriterion::validate(&dag, "T", "Y", &good).expect("known names"));
+}

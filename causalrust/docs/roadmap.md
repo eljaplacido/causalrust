@@ -257,32 +257,94 @@ The property no Python equivalent has, and the one most worth advertising.
 For an embedded decision layer the p99 is what a caller feels; the mean is what
 a marketing table quotes.
 
-- [ ] Report p50/p95/p99 from criterion's distributions rather than the mean
-- [ ] Latency under adversarial input, not just the happy path
-- [ ] Record the CPU. A number without the machine is not reproducible
+- [x] `examples/latency_report` — per-call p50/p95/p99/max, not criterion's
+      central estimate. criterion is the right tool for detecting *regressions*
+      in throughput; it times batches, so a per-call tail is not recoverable
+      from it. Hence a separate harness.
+- [x] Timer overhead measured and printed. For the sub-microsecond rows it is a
+      material fraction of the reading, and quoting them without it overstates
+      their cost.
+- [x] The CPU is printed with the table. A latency number without the machine is
+      not reproducible.
+- [x] Refusal paths timed alongside the happy path. If declining cost more than
+      answering, a caller under load would be tempted to skip the check.
+      A length mismatch is rejected at the timer floor; an empty arm is **not**
+      free, because discovering the arm is empty costs a pass over the column.
+- [ ] Latency under adversarial *numerics* — near-singular designs, extreme
+      propensity scores — where the iterative paths do the most work
+- [ ] Not run for time in CI, and should stay that way: shared runners have
+      noisy neighbours whose variance exceeds the differences worth detecting
 
 ### 6. Footprint
 
 The claim that "no GC pauses, embeddable in any service" rests on, and is
-currently unmeasured.
+partly measured.
 
-- [ ] Allocation counts per estimate via a counting allocator
-- [ ] Peak RSS on the largest grid cell
+- [x] Peak RSS reported by `examples/latency_report`, read from
+      `/proc/self/status`
+- [x] Tails are tight — p99 within a few percent of p50 on every row — which is
+      the evidence that these paths are not allocation-dominated, and that is
+      the property that makes them safe in a request path
+- [ ] **Per-call allocation counts — blocked, deliberately.** The direct way is
+      a counting `GlobalAlloc`. The workspace sets `unsafe_code = "forbid"`, and
+      `forbid` cannot be downgraded by an `#[allow]` at the use site — which is
+      the whole reason for choosing it over `deny`. Weakening a real guarantee
+      so a benchmark could print a nicer number is the wrong trade, so this
+      needs an **external profiler** (`heaptrack`, or `valgrind --tool=massif`)
+      run out-of-band and recorded here. It is not going to be smuggled into the
+      example.
 - [ ] Confirm no allocation in the circuit-breaker and rate-limiter hot paths
+      (same blocker, same resolution)
 
-### 7. Throughput (the README table)
+### 7. Throughput — and the first measured cell, which was 50x off
 
-Last, deliberately.
+Last, deliberately. One row of the README's table has now been measured, and it
+is the most important result in this section:
 
-- [ ] A committed Python harness pinning the versions compared against
-- [ ] Same data, same task, both sides — trivially unfair comparisons are the
-      norm in this genre and are worth nothing
-- [ ] Run on a quiet machine with the CPU recorded, never on a shared CI runner
+| nodes | `networkx.is_d_separator` (p50) | `cynepic_causal::d_separated` (p50) | measured |
+|---|---|---|---|
+| 10 | 12.1µs | 0.62µs | **19x** |
+| 100 | 49.3µs | 4.6µs | **11x** |
+| 500 | 213.2µs | 24.2µs | **9x** |
+
+Both sides on one machine (aarch64, 2026-08-20; networkx 3.6.1, Python 3.12.3),
+p50 of 2000 calls, same chain graphs, same conditioning set.
+
+The README assumed **~1,000x** against a "~10ms NetworkX baseline". Both halves
+were wrong, and in the same direction — NetworkX is roughly *three orders of
+magnitude* faster than the assumed baseline, so the ratio was inflated at both
+ends. The real figure is **9–19x**.
+
+Two things follow, and the second matters more than the first:
+
+1. **The speedup falls as the graph grows.** 19x at 10 nodes, 9x at 500. That
+   shape says most of the win is per-call Python interpreter overhead, not the
+   algorithm. Extrapolating from the small-graph number to a production-sized
+   graph would be wrong in the optimistic direction, which is the direction that
+   gets noticed late.
+2. **9–19x is a good result that nobody needed to exaggerate.** The assumed
+   number was not a lie anyone told deliberately; it was a plausible figure that
+   never met an instrument. That is exactly the failure mode `docs/FINDINGS.md`
+   exists for, and it is why the remaining rows stay marked assumed.
+
+Still outstanding:
+
+- [x] A committed Python harness pinning the versions compared against —
+      `scripts/compare_networkx.py`, which prints its `networkx` and Python
+      versions and refuses to be read as a cross-machine result
+- [x] Same data, same task, both sides. Writing this is what surfaced the
+      d-separation disjointness defect: NetworkX *raises* on overlapping query
+      sets where we returned `Ok(true)`, so the two sides were not answering the
+      same question until that was fixed.
+- [ ] The other three rows — PyMC (sampler), OPA (policy), LangGraph (graph).
+      None measured. All still marked assumed in the README.
 - [ ] Publish the cells where we are *slower*. A table with no losses is
-      advertising
+      advertising, and at 500 nodes the trend line is already pointing at one.
+- [ ] Run on a quiet machine with the CPU recorded, never on a shared CI runner
 
-Only when 1, 3 and 5 exist does 7 become a claim rather than a hope. Until
-then the README says "assumed", which is accurate.
+Only when 1, 3 and 5 exist does 7 become a claim rather than a hope. For
+d-separation they now do, and the claim is 9–19x. For everything else the README
+says "assumed", which remains accurate.
 
 ### 4.3 Documentation Site
 - [ ] mdBook or similar for user-facing docs

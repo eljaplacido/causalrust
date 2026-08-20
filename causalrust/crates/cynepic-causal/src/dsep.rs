@@ -30,8 +30,11 @@ use std::collections::{HashSet, VecDeque};
 ///
 /// # Errors
 ///
-/// [`DsepError::UnknownVariable`] if `x`, `y`, or any member of `z` is not in
-/// the graph.
+/// - [`DsepError::UnknownVariable`] if `x`, `y`, or any member of `z` is not in
+///   the graph.
+/// - [`DsepError::OverlappingSets`] if the three sets are not disjoint. The
+///   relation is only defined for disjoint sets, and answering anyway returned
+///   `true` — a positive finding of independence for a query with no answer.
 pub fn d_separated(
     dag: &CausalDag,
     x: &str,
@@ -45,6 +48,26 @@ pub fn d_separated(
 
     let x_idx = dag.node_index(x).ok_or_else(|| unknown(x))?;
     let y_idx = dag.node_index(y).ok_or_else(|| unknown(y))?;
+
+    // D-separation is defined for three DISJOINT sets. Answering a malformed
+    // query returned `true` — "conditionally independent" — which is the same
+    // failure shape as C12: affirmatively wrong in the direction a caller acts
+    // on. `networkx.is_d_separator` raises here too, and matching that is how
+    // the disagreement was found.
+    if x == y {
+        return Err(DsepError::OverlappingSets {
+            name: x.to_string(),
+            roles: "x and y".to_string(),
+        });
+    }
+    for (name, role) in [(x, "x and z"), (y, "y and z")] {
+        if z.contains(name) {
+            return Err(DsepError::OverlappingSets {
+                name: name.to_string(),
+                roles: role.to_string(),
+            });
+        }
+    }
     // The conditioning set is checked too: adjusting for a variable that does
     // not exist is exactly the mistake this is meant to catch, and it is the
     // easiest one to make when the set is assembled programmatically.
@@ -204,6 +227,13 @@ mod tests {
         let dag = dag_from(&[("A", "B"), ("B", "C"), ("A", "E"), ("E", "D"), ("C", "D")]);
         for (x, y) in [("A", "D"), ("B", "E"), ("C", "E")] {
             for z in [vec![], vec!["B"], vec!["E"], vec!["B", "E"]] {
+                // The three sets must be disjoint for the query to be defined;
+                // `d_separated` now rejects the rest rather than answering
+                // `true`, so those combinations are skipped here rather than
+                // asserted on.
+                if z.contains(&x) || z.contains(&y) {
+                    continue;
+                }
                 assert_eq!(
                     sep(&dag, x, y, &z),
                     sep(&dag, y, x, &z),
@@ -225,6 +255,7 @@ mod tests {
                 assert_eq!(name, "typo");
                 assert!(known.contains(&"X".to_string()));
             }
+            other => panic!("expected UnknownVariable, got {other}"),
         }
     }
 

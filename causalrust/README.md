@@ -107,19 +107,28 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 
 ---
 
-## Performance — assumed, not yet proven
+## Performance — one row measured, the rest assumed
 
-These are the speedups we expect from moving this work out of Python. They are
-**assumptions**, not measurements: no benchmark in this repository produces any
-of them.
+| Operation | Python equivalent | cynepic-rs | Speedup | Status |
+|-----------|------------------|------------|---------|--------|
+| DAG d-separation | NetworkX | petgraph | **9–19x** | **measured** |
+| Beta conjugate prior update | PyMC | direct | ~1,000x | assumed |
+| Policy evaluation | OPA sidecar | in-process regorus | ~100x | assumed |
+| Circuit breaker check | Python | atomics | ~1,000x | assumed |
+| StateGraph step | LangGraph | typed dispatch | ~10x | assumed |
 
-| Operation | Python equivalent | cynepic-rs | Assumed speedup |
-|-----------|------------------|------------|---------|
-| DAG d-separation | NetworkX | petgraph | ~1,000x |
-| Beta conjugate prior update | PyMC | direct | ~1,000x |
-| Policy evaluation | OPA sidecar | in-process regorus | ~100x |
-| Circuit breaker check | Python | atomics | ~1,000x |
-| StateGraph step | LangGraph | typed dispatch | ~10x |
+The rows marked **assumed** are what we expect from moving this work out of
+Python. No benchmark in this repository produces them, and they should not be
+quoted.
+
+The one row that *was* measured came back **50x below its assumption** — 9–19x,
+not ~1,000x — and the ratio *falls* as the graph grows, so most of the win is
+Python call overhead rather than the algorithm. The assumption was not
+dishonest; it was plausible and had never met an instrument. Reproduce it with
+`scripts/compare_networkx.py` and `cargo run -p cynepic-causal --example
+latency_report --release` on one machine, and see
+[docs/roadmap.md](docs/roadmap.md#benchmarking-what-still-has-to-be-proven) for
+what each remaining row would take to prove.
 
 **Speed is also not the main reason to use this.** For causal inference the
 value is a number you can act on — an interval that covers, an estimator that

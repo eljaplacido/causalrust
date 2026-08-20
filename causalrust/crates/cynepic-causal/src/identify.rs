@@ -230,6 +230,19 @@ impl BackdoorCriterion {
             });
         }
 
+        // An adjustment set containing the treatment or the outcome is not a
+        // valid adjustment set, and `false` says so truthfully — this is the
+        // caller asking "may I use this?", which has a defensible `no`.
+        //
+        // The lower-level `d_separated` now *rejects* the same shape rather
+        // than answering, because there the question is "are these
+        // independent?", and for overlapping sets that has no answer at all
+        // (finding C12). Screening here keeps that stricter rule from leaking
+        // out as an error on a call that has a sensible answer.
+        if candidate.contains(treatment) || candidate.contains(outcome) {
+            return Ok(false);
+        }
+
         // Conditioning on a descendant of the treatment is never valid.
         let descendants = dag.descendants(treatment);
         if candidate.iter().any(|v| descendants.contains(v)) {
@@ -271,6 +284,14 @@ fn is_valid_backdoor(
     dsep::d_separated(backdoor, treatment, outcome, z).map_err(|e| match e {
         crate::error::DsepError::UnknownVariable { name, known } => {
             IdentificationError::UnknownVariable { name, known }
+        }
+        // Unreachable from `find` (candidates exclude the treatment and the
+        // outcome by construction) and from `validate` (which screens for it
+        // above and answers `Ok(false)`). Mapped rather than unwrapped anyway:
+        // an `expect` here would be a panic in library code on a path a future
+        // caller could reach.
+        crate::error::DsepError::OverlappingSets { name, roles } => {
+            IdentificationError::OverlappingSets { name, roles }
         }
     })
 }
@@ -465,6 +486,9 @@ fn is_valid_backdoor_named(
     dsep::d_separated(dag, a, b, z).map_err(|e| match e {
         crate::error::DsepError::UnknownVariable { name, known } => {
             IdentificationError::UnknownVariable { name, known }
+        }
+        crate::error::DsepError::OverlappingSets { name, roles } => {
+            IdentificationError::OverlappingSets { name, roles }
         }
     })
 }

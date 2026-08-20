@@ -233,6 +233,27 @@ pub enum DsepError {
         /// Variables the graph does contain.
         known: Vec<String>,
     },
+
+    /// `x`, `y` and the conditioning set are not disjoint.
+    ///
+    /// D-separation is defined for three *disjoint* sets. Asking whether `X` is
+    /// independent of `Y` given `{X}` is not a hard question, it is a malformed
+    /// one, and the previous behaviour was to answer `true` — a positive finding
+    /// of independence for a query that has no answer.
+    ///
+    /// That is the same shape as finding C12: the failure mode is not being
+    /// wrong, it is being *affirmatively* wrong in the direction a caller is
+    /// most likely to act on. `networkx.is_d_separator` raises here too.
+    #[error(
+        "'{name}' appears in more than one of the query sets ({roles}); \
+         d-separation is defined for disjoint sets"
+    )]
+    OverlappingSets {
+        /// The variable that appears twice.
+        name: String,
+        /// Which sets it appears in, e.g. "x and z".
+        roles: String,
+    },
 }
 
 /// Why a causal effect could not be identified from the graph.
@@ -270,6 +291,25 @@ pub enum IdentificationError {
         outcome: String,
         /// The latent variables that would be needed.
         latent: Vec<String>,
+    },
+
+    /// A variable appears in more than one of the query sets.
+    ///
+    /// Identification is defined for a treatment, an outcome and an adjustment
+    /// set that are mutually disjoint. `BackdoorCriterion::validate` answers
+    /// `Ok(false)` for the common form of this — an adjustment set containing
+    /// the treatment or the outcome — because "is this set valid?" has a
+    /// truthful `no`. This variant is for the lower-level helpers, where there
+    /// is no such answer to give.
+    #[error(
+        "'{name}' appears in more than one of the query sets ({roles}); \
+         identification is defined for disjoint sets"
+    )]
+    OverlappingSets {
+        /// The variable that appears twice.
+        name: String,
+        /// Which sets it appears in, e.g. "treatment and adjustment set".
+        roles: String,
     },
 
     /// A variable named in the query is not in the graph.
