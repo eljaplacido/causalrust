@@ -435,3 +435,225 @@ async fn main() -> io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(method: &str, params: Option<Value>) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: method.into(),
+            params,
+        }
+    }
+
+    /// Every tool the server advertises, taken from the manifest rather than
+    /// listed here — so adding a tool without a schema fails this suite instead
+    /// of shipping.
+    fn advertised_tools() -> Vec<String> {
+        McpServer::list_tools()["tools"]
+            .as_array()
+            .expect("tools is an array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn initialize_reports_a_protocol_version_and_identifies_itself() {
+        let r = McpServer::handle_request(&request("initialize", None)).await;
+        assert!(r.error.is_none(), "{:?}", r.error);
+        let result = r.result.expect("initialize returns a result");
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["serverInfo"]["name"], "cynepic-mcp");
+        // The version is what a client uses to decide whether it can talk to
+        // this server at all, so it must not be empty.
+        assert!(
+            result["serverInfo"]["version"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty()),
+            "server version missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_advertised_version_matches_the_crate() {
+        // Hand-written version strings drift from the manifest silently, and a
+        // client that trusts the wire version then trusts the wrong thing.
+        let r = McpServer::handle_request(&request("initialize", None)).await;
+        let result = r.result.expect("initialize returns a result");
+        assert_eq!(
+            result["serverInfo"]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "the version on the wire has drifted from Cargo.toml"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_advertised_tool_has_a_description_and_a_schema() {
+        let tools = McpServer::list_tools();
+        let list = tools["tools"].as_array().expect("tools is an array");
+        assert!(!list.is_empty(), "a tool server with no tools");
+
+        for t in list {
+            let name = t["name"].as_str().unwrap_or_default();
+            assert!(!name.is_empty(), "a tool with no name: {t}");
+            assert!(
+                t["description"].as_str().is_some_and(|d| !d.is_empty()),
+                "tool '{name}' has no description; a client cannot choose it"
+            );
+            // Without a schema a client cannot construct a call, so an
+            // undocumented tool is an unreachable one.
+            assert!(
+                t["inputSchema"]["type"] == "object",
+                "tool '{name}' has no object input schema"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_names_are_unique() {
+        let mut names = advertised_tools();
+        let total = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "duplicate tool names would be ambiguous"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_protocol_version_is_refused() {
+        // Previously the field was parsed and never read, so a client talking a
+        // different protocol was served as if it were valid.
+        let mut req = request("initialize", None);
+        req.jsonrpc = "1.0".into();
+        let r = McpServer::handle_request(&req).await;
+        let e = r.error.expect("a wrong protocol version must be an error");
+        assert_eq!(e.code, -32600, "JSON-RPC invalid request");
+        assert!(r.result.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_method_is_method_not_found() {
+        let r = McpServer::handle_request(&request("tools/teleport", None)).await;
+        let e = r.error.expect("unknown methods must error");
+        assert_eq!(e.code, -32601);
+        assert!(
+            e.message.contains("tools/teleport"),
+            "the message should name what was asked for: {}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_call_without_params_is_invalid_params() {
+        let r = McpServer::handle_request(&request("tools/call", None)).await;
+        let e = r.error.expect("a call with no params must error");
+        assert_eq!(e.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_errors_rather_than_returning_empty_content() {
+        let r = McpServer::handle_request(&request(
+            "tools/call",
+            Some(json!({"name": "no_such_tool", "arguments": {}})),
+        ))
+        .await;
+        assert!(
+            r.error.is_some(),
+            "an unknown tool returned a result: {:?}",
+            r.result
+        );
+    }
+
+    #[tokio::test]
+    async fn the_id_is_echoed_so_a_client_can_correlate() {
+        // A JSON-RPC client multiplexes on the id. Dropping it turns a pipelined
+        // conversation into a guessing game.
+        for id in [json!(7), json!("abc"), json!(null)] {
+            let mut req = request("initialize", None);
+            req.id = Some(id.clone());
+            let r = McpServer::handle_request(&req).await;
+            assert_eq!(r.id, Some(id), "id was not echoed");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_response_carries_the_jsonrpc_marker() {
+        for req in [
+            request("initialize", None),
+            request("tools/list", None),
+            request("nope", None),
+        ] {
+            let r = McpServer::handle_request(&req).await;
+            assert_eq!(r.jsonrpc, "2.0");
+        }
+    }
+
+    // ── The tools themselves ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn classify_domain_returns_a_domain_and_its_entropy() {
+        let out = McpServer::call_tool(
+            "classify_domain",
+            &json!({"query": "why did throughput drop after the deploy"}),
+        )
+        .await
+        .expect("a well-formed query");
+        assert!(out.get("domain").is_some(), "no domain in {out}");
+        assert!(
+            out.get("entropy").is_some(),
+            "entropy is the escalation signal and must be reported: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn estimate_ate_reports_its_estimand_not_just_a_number() {
+        let out = McpServer::call_tool(
+            "estimate_ate",
+            &json!({
+                "treatment": [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+                "outcome":   [3.0, 1.0, 3.5, 1.2, 2.8, 0.9, 3.1, 1.1]
+            }),
+        )
+        .await
+        .expect("a well-posed estimate");
+        assert!(out.get("ate").is_some(), "no estimate in {out}");
+        // The whole point of `ATEResult` having no public constructor is that a
+        // number cannot travel without what it means. A tool surface that
+        // returned a bare `ate` would undo that.
+        assert!(
+            out.get("estimand").is_some() || out.get("std_error").is_some(),
+            "an estimate crossed the wire with no provenance: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_given_unusable_data_errors_rather_than_inventing_a_number() {
+        // Every arm empty: there is no contrast, so there is no effect to
+        // estimate. Returning one anyway is the failure this project exists to
+        // prevent.
+        let out = McpServer::call_tool(
+            "estimate_ate",
+            &json!({"treatment": [1.0, 1.0, 1.0], "outcome": [1.0, 2.0, 3.0]}),
+        )
+        .await;
+        assert!(
+            out.is_err(),
+            "an estimate with no control arm was answered: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_arguments_are_reported_rather_than_defaulted() {
+        // Silently treating an absent array as empty is how a caller gets a
+        // confident answer to a question they did not ask.
+        let out = McpServer::call_tool("estimate_ate", &json!({})).await;
+        assert!(out.is_err(), "missing arguments were accepted: {out:?}");
+    }
+}

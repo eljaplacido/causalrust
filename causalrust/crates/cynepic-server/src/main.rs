@@ -49,6 +49,9 @@ struct ApiError {
 }
 
 /// Wrapper so estimator errors map to a status that describes them.
+///
+/// `Debug` so a test that expects success can print what came back instead.
+#[derive(Debug)]
 struct Failure(StatusCode, String, String);
 
 impl IntoResponse for Failure {
@@ -365,5 +368,271 @@ async fn main() {
     if let Err(e) = axum::serve(listener, app).await {
         tracing::error!(error = %e, "server terminated");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Recover status and body from a handler's `Failure` without a listener.
+    ///
+    /// The handlers are ordinary async functions over `Json<T>`, so they can be
+    /// called directly. Spinning up a TCP listener to test them would measure
+    /// axum's routing table rather than this crate's behaviour, and would make
+    /// the suite dependent on a free port.
+    fn failure_parts(f: Failure) -> (StatusCode, String) {
+        let Failure(status, kind, _) = f;
+        (status, kind)
+    }
+
+    #[tokio::test]
+    async fn health_names_the_service_and_its_version() {
+        let Json(v) = health().await;
+        assert_eq!(v["status"], "healthy");
+        assert_eq!(v["service"], "cynepic-server");
+        // A health endpoint that does not report a version cannot answer the
+        // question it is usually asked during an incident: what is deployed?
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    // ── The error contract ──────────────────────────────────────────────
+    //
+    // These are the tests that earn their keep. The mapping from estimator
+    // errors to HTTP is the API's promise that "your data cannot support this"
+    // is distinguishable from "the service broke", and it is an exhaustive
+    // match that a new error variant will not compile without.
+
+    #[tokio::test]
+    async fn data_errors_are_422_not_500() {
+        // A 500 pages someone at 3am. A 422 tells the caller what to fix. Every
+        // estimation error describes the caller's data, so every one is a 422.
+        for e in [
+            EstimationError::NoObservations,
+            EstimationError::EmptyArm {
+                arm: "treated",
+                n_treated: 0,
+                n_control: 10,
+            },
+            EstimationError::InsufficientData { n: 3, p: 5 },
+            EstimationError::CrossFittingNotApplicable {
+                available: 12,
+                required: 80,
+                parameters: 4,
+            },
+        ] {
+            let (status, _) = failure_parts(Failure::from(e));
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
+    #[tokio::test]
+    async fn every_error_kind_is_distinct() {
+        // Two different failures reported under one name are indistinguishable
+        // to a caller writing a retry policy, which is the whole point of
+        // carrying a kind alongside the status.
+        let kinds: Vec<String> = vec![
+            EstimationError::NoObservations,
+            EstimationError::EmptyArm {
+                arm: "treated",
+                n_treated: 0,
+                n_control: 10,
+            },
+            EstimationError::InsufficientData { n: 3, p: 5 },
+            EstimationError::CrossFittingNotApplicable {
+                available: 12,
+                required: 80,
+                parameters: 4,
+            },
+            EstimationError::LengthMismatch {
+                name_a: "treatment",
+                len_a: 3,
+                name_b: "outcome",
+                len_b: 4,
+            },
+        ]
+        .into_iter()
+        .map(|e| failure_parts(Failure::from(e)).1)
+        .collect();
+
+        let mut unique = kinds.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            kinds.len(),
+            "duplicate error kinds: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().all(|k| !k.is_empty()),
+            "an empty kind tells a caller nothing"
+        );
+    }
+
+    // ── Causal ──────────────────────────────────────────────────────────
+
+    fn causal_request(method: &str) -> CausalRequest {
+        // Twenty units, a real effect of 2.0, one covariate.
+        let treatment: Vec<f64> = (0..20).map(|i| f64::from(u8::from(i % 2 == 0))).collect();
+        let covariates: Vec<Vec<f64>> = (0..20).map(|i| vec![f64::from(i % 5)]).collect();
+        let outcome: Vec<f64> = (0..20)
+            .map(|i| 2.0 * f64::from(u8::from(i % 2 == 0)) + f64::from(i % 5) * 0.5)
+            .collect();
+        CausalRequest {
+            treatment,
+            outcome,
+            covariates,
+            method: Some(method.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_estimate_carries_its_provenance() {
+        let Json(r) = causal_estimate(Json(causal_request("ols")))
+            .await
+            .expect("well-posed");
+        // The point of `ATEResult` having no public constructor is that a number
+        // cannot be separated from what it means. This asserts the API does not
+        // undo that by serialising only the point estimate.
+        assert!(!r.estimand.is_empty(), "estimand must be reported");
+        assert!(!r.population.is_empty(), "population must be reported");
+        assert!(!r.std_error_kind.is_empty(), "SE kind must be reported");
+        assert!(r.confidence_interval.is_some(), "interval must be reported");
+        assert_eq!(r.n_obs, 20);
+        assert_eq!(r.method, "ols");
+        assert!((r.ate - 2.0).abs() < 0.5, "ate {} is far from 2.0", r.ate);
+    }
+
+    #[tokio::test]
+    async fn mismatched_input_lengths_are_rejected_with_a_reason() {
+        let mut req = causal_request("ols");
+        req.outcome.truncate(5);
+        let (status, kind) = failure_parts(
+            causal_estimate(Json(req))
+                .await
+                .expect_err("mismatched lengths cannot be estimated"),
+        );
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(kind, "length_mismatch");
+    }
+
+    #[tokio::test]
+    async fn ragged_covariates_are_rejected_before_reaching_an_estimator() {
+        let mut req = causal_request("ols");
+        req.covariates[3] = vec![1.0, 2.0];
+        let (status, kind) = failure_parts(
+            causal_estimate(Json(req))
+                .await
+                .expect_err("ragged rows are not a matrix"),
+        );
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(kind, "ragged_covariates");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_method_is_a_400_that_lists_the_known_ones() {
+        let (status, kind) = failure_parts(
+            causal_estimate(Json(causal_request("magic")))
+                .await
+                .expect_err("no such method"),
+        );
+        // 400, not 422: the request itself is malformed, not the data in it.
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(kind, "unknown_method");
+    }
+
+    #[tokio::test]
+    async fn every_advertised_method_works() {
+        // The module docs name three. A method that 404s at runtime is worse
+        // than one that was never documented.
+        for method in ["ols", "ipw", "att"] {
+            let r = causal_estimate(Json(causal_request(method))).await;
+            assert!(
+                r.is_ok(),
+                "method '{method}' failed on well-posed data: {:?}",
+                r.err().map(failure_parts)
+            );
+        }
+    }
+
+    // ── Bayes ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_belief_update_returns_an_exact_interval() {
+        let Json(r) = bayes_update(Json(BayesRequest {
+            successes: 7,
+            trials: 10,
+        }))
+        .await
+        .expect("valid counts");
+        assert!(
+            (r.posterior_mean - 8.0 / 12.0).abs() < 1e-9,
+            "{}",
+            r.posterior_mean
+        );
+        let (lo, hi) = r.credible_interval;
+        assert!(lo > 0.0 && hi < 1.0 && lo < hi, "interval ({lo}, {hi})");
+        assert!(
+            lo < r.posterior_mean && r.posterior_mean < hi,
+            "the mean must lie inside its own interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn more_successes_than_trials_is_rejected() {
+        let (status, kind) = failure_parts(
+            bayes_update(Json(BayesRequest {
+                successes: 11,
+                trials: 10,
+            }))
+            .await
+            .expect_err("impossible counts"),
+        );
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(kind, "successes_exceed_trials");
+    }
+
+    // ── Router ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn classification_reports_entropy_alongside_the_domain() {
+        let Json(r) = classify(Json(ClassifyRequest {
+            query: "what is the current retry limit".to_string(),
+        }))
+        .await
+        .expect("infallible");
+        assert!(!r.domain.is_empty());
+        assert!((0.0..=1.0).contains(&r.confidence));
+        // Entropy is the signal an escalation policy triggers on. An API that
+        // returned only the domain would leave a caller unable to tell a
+        // confident route from a coin flip.
+        assert!((0.0..=1.0).contains(&r.entropy));
+    }
+
+    #[tokio::test]
+    async fn an_unroutable_query_says_so_rather_than_guessing() {
+        let Json(r) = classify(Json(ClassifyRequest {
+            query: "zzzz qqqq".to_string(),
+        }))
+        .await
+        .expect("infallible");
+        assert_eq!(r.domain, format!("{:?}", CynefinDomain::Disorder));
+        assert!(r.confidence == 0.0, "confidence {}", r.confidence);
+    }
+
+    // ── Guardian ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn an_empty_policy_chain_approves_and_the_response_shows_it() {
+        let Json(r) = guardian_evaluate(Json(GuardianRequest {
+            action: "deploy".to_string(),
+            context: serde_json::json!({"role": "admin"}),
+        }))
+        .await
+        .expect("infallible");
+        // Documented behaviour: a chain nobody configured approves. The test
+        // exists so that is a decision on the record rather than a surprise.
+        assert_eq!(r.verdict, "approve");
+        assert!(r.reason.is_none());
     }
 }
