@@ -1,13 +1,12 @@
 # Correctness findings — cynepic-rs
 
-> **Status: twelve findings closed, two open, across three measured crates.**
+> **Status: thirteen findings closed, two open, across three measured crates.**
 >
-> - `cynepic-causal` — `ols_adjusted` is nominal on all nine grid cells; IPW
->   under-covers by ~3 points where the weights are heavy ([C14](#c14), open).
->   The gap narrowed 87.3% → 90.3% → 91.8% across two rounds, and the third
->   round found why no interval can close it: at strong confounding **100% of
->   the intervals that miss are the ones reporting a below-median standard
->   error**. Under heavy weights a narrow interval is the case to distrust.
+> - `cynepic-causal` — `ols_adjusted` and `ipw` are both nominal on every
+>   estimable grid cell. IPW's interval closed in the third round of
+>   [C14](#c14) (87.3% → 90.3% → **92.3%** under strong confounding, and
+>   89.2% → **94.3%** at high-dim) via HC3 leverage rescaling and out-of-fold
+>   propensity fitting. **`att` remains open** at 91.0–92.4%.
 > - `cynepic-bayes` — every conjugate interval is calibrated and both samplers
 >   pass simulation-based calibration ([B1](#b1), closed).
 > - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
@@ -71,7 +70,7 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C11](#c11) | `dag` | `CausalDag` did not enforce acyclicity | Critical | **Closed** |
 | [C12](#c12) | `dsep` | Unknown variables reported as d-separated | Critical | **Closed** |
 | [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
-| [C14](#c14) | `estimate::propensity` | Under heavy weights a *small* SE marks the intervals that miss | High | **OPEN** (mechanism identified) |
+| [C14](#c14) | `estimate::propensity` | Under heavy weights a *small* SE marks the intervals that miss | High | **ATE closed, ATT open** |
 | [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
 | [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** (answered, below bar) |
 | [G1](#g1) | `guardian::circuit_breaker` | No half-open state; whole load restored on a timer | **Critical** | **Closed** |
@@ -342,166 +341,176 @@ Specs: `b1_shipped_interval_matches_the_exact_reference`,
 
 ---
 
-## <a id="c14"></a>C14 — a small standard error is a danger signal, not a precise one · **OPEN, mechanism identified**
+## <a id="c14"></a>C14 — IPW interval closed; ATT still open · **ATE CLOSED, ATT OPEN**
 
-Coverage under heavy weights: **87.3% → 90.3% → 91.8%** across two rounds of
-partial fixes. Still below nominal, and the third round established *why no
-interval can close it*, which is a different claim from the one this finding
-started with.
+`ipw` is nominal on every estimable cell of the grid. `att` is not, and the
+finding stays open for it.
 
-### The result that reframes it
-
-Over 800 replications, of the replications whose interval **failed to cover**:
-
-| cell | corr(\|error\|, se) | share of misses from a **below-median** SE |
+| cell | before | now |
 |---|---|---|
-| benign | 0.067 | 40.0% |
-| moderate-overlap | 0.076 | **98.5%** |
-| strong-confounding | −0.036 | **100.0%** |
-| high-dim | 0.509 | 82.0% |
+| benign | 95.3% | 95.3% |
+| **strong-confounding** | 87.3% → 90.3% | **92.3%** |
+| **moderate-overlap** | 89.4% | **95.0%** |
+| nonlinear | 95.3% | 95.3% |
+| heteroskedastic | 94.3% | 94.3% |
+| heterogeneous-effects | 99.0% | 99.0% |
+| small-n | 96.3% | 96.3% |
+| **high-dim** | **89.2%** | **94.3%** |
+| weak-overlap | refused | refused |
 
-Under independence that last column is 50%. At strong confounding it is
-**100%**: every single failure to cover happened in a replication that reported
-*below-median* uncertainty.
+`c14_ipw_coverage_is_nominal_under_strong_confounding` no longer carries
+`#[ignore]`; the ratchet baseline is 5 → 4.
 
-The interval is narrowest exactly when it most needs to be wide. A t-interval
-assumes the error and the standard error are independent, and here they are
-anti-informative. **No degrees-of-freedom rule can repair that**, because a dof
-rule scales every interval by the same factor — reaching the bad replications
-means grossly over-covering all the others. That is visible directly: a fixed
-`dof = 4` brings the heavy cells to 96.0% and takes `benign` to 99.8%.
+`att` under strong confounding measures **91.0–92.4%** depending on the seed,
+straddling the 3-point bar. A spec that passes on some seeds is worse than one
+that fails, so it stays `#[ignore]`d and is not claimed as fixed.
 
-The mechanism is that the heavy-weight units carry the correction that removes
-confounding bias. A sample that happens not to contain them produces both a
-small variance estimate *and* an estimate that is systematically off. It is
-confidently wrong, and it is confident *because* it is wrong.
+### What fixed it
 
-**The operational consequence, which is the useful part:** under heavy weights,
-a small reported standard error is not evidence of precision. Read
-`Diagnostics::effective_n` and `Diagnostics::variance_dof` first. A dof in the
-single digits on `n = 2000` means the interval rests on a handful of
-observations, and a *narrow* interval in that regime is the case to distrust
-most.
+**1. HC3 leverage rescaling inside the projection.** The projection is right —
+removing it makes `benign` cover at 100.0% with intervals **2.1x** wider than
+needed — but its finite-sample correction was not. A residual from a
+`k`-coefficient fit is shrunk by `1 - h_ii`, and a flat `n / (n - k)` spreads
+that shrinkage evenly across rows. That is correct only when every row has the
+same leverage. Under heavy weights a handful of rows dominate the fit, are shrunk
+far more than average, and the even correction under-corrects.
 
-### Two fixes that did land, and what they were worth
+Dividing each squared residual by `(1 - h_ii)^2` is HC3, which this crate already
+uses for OLS. Applied to ATT, whose bias is only 0.05 sd so its ceiling is
+essentially nominal:
 
-Measured across the DGP grid, 500 replications, coverage at 95% nominal:
-
-| cell | before | after |
-|---|---|---|
-| benign | 95.6% | 95.6% |
-| moderate-overlap | 90.4% | **91.2%** |
-| strong-confounding | 91.2% | **91.8%** |
-| nonlinear | 96.4% | 96.4% |
-| heteroskedastic | 96.2% | 96.6% |
-| heterogeneous-effects | 95.6% | 95.6% |
-| small-n | 95.4% | 96.2% |
-| **high-dim** | 90.4% | **91.8%** |
-
-**1. The projection was not paying for its coefficients.** `residual_psi` is the
-residual from a `k`-coefficient least-squares fit, so `sum(residual^2)` is a
-*residual* sum of squares and is biased low by `(n - k)/n` — the same reason an
-OLS variance divides by `n - k`. The variance divided by `n^2` and made no such
-correction. At `n = 2000` with a few covariates that is a quarter of a percent
-and invisible, which is why it survived; at **high-dim** (`p = 25`, so `k = 26`,
-on `n = 400`) it is **6.5% of the variance**. That cell covers at 89.2% with a
-bias of **0.02 sd** — nothing was wrong with the point estimate, the interval
-was simply too narrow. `high-dim` was not previously recorded as affected.
-
-**2. Satterthwaite carried a Gaussian assumption into a correction that exists
-because Gaussianity failed.** `nu = 2 (sum psi^2)^2 / (sum psi^4 - ...)`. The
-factor of two is `Var(chi^2_nu) = 2 nu`, which holds for squares of Gaussians.
-Under heavy tails `psi^2` has a coefficient of variation above the Gaussian
-value, so the true dof is *below* `2 x Kish`. Dropping the factor gives Kish's
-effective sample size — the same quantity already reported as `effective_n`,
-applied to the influence contributions instead of the weights.
-
-The new rule's dof now matches the dof the observed noise implies, which is the
-check that it is right rather than merely helpful:
-
-| cell | dof implied by observed cv(se) | Satterthwaite | Kish |
+| cell | flat `n/(n-k)` | HC2 | **HC3** |
 |---|---|---|---|
-| moderate-overlap | 6.8 | 16.5 | **8.2** |
-| strong-confounding | 7.8 | 14.2 | **7.1** |
+| benign | — | 97.2% | 97.2% |
+| strong-confounding | 91.4% | 92.0% | **92.4%** |
+| high-dim | — | 93.6% | **95.0%** |
+| small-n | — | 96.6% | 97.6% |
 
-And it is invisible where it should be: at `benign` it takes the dof from 803 to
-334, and `t(0.975, 334)` is 1.967 against 1.963.
+Leverage is computed as `||R^-T P' s_i||^2` from the existing pivoted QR, so
+`S'S` is never formed and its condition number never squared.
+
+**2. Cross-fitting the propensity model, where the data supports it.**
+`fit_propensity` scores the same units it was fitted on, so the influence
+variance built from those scores is too small. Fitting out-of-fold removes the
+cause.
+
+| cell | in-sample | cross-fitted |
+|---|---|---|
+| benign | 96.8% | 96.8% |
+| moderate-overlap | 91.0% | **93.0%** |
+| strong-confounding | 92.2% | **93.8%** |
+
+### The part that refutes this document's own proposal
+
+The previous version of this finding proposed cross-fitting as the fix for
+`high-dim`. **Measured, it is catastrophic there:**
+
+| cell | in-sample | cross-fitted |
+|---|---|---|
+| small-n | 96.0% | 91.0% |
+| high-dim | 90.5% | **46.5%** |
+| very-high-dim | 91.0% | **28.2%** |
+
+At `high-dim` the sampling sd nearly doubles (0.289 → 0.561) while the reported
+standard error does not, and **no replication refuses**. A confident wrong
+answer is the failure mode this crate exists to avoid, so cross-fitting is
+refused up front where the data cannot support it —
+`EstimationError::CrossFittingNotApplicable`, bounded by the events-per-variable
+rule of thumb from logistic regression (20 units in the smaller arm of each
+training split, per fitted coefficient).
+
+It helps exactly where the weights are heavy and harms exactly where the model
+is poorly determined. The guard separates those cleanly, and the cells that read
+`+0.0` in the adaptive table below are the guard refusing, not cross-fitting
+being harmless there.
+
+Adopting it as `ipw`'s default changes the point estimate for every caller, so
+the bar was that it be no worse on **every** cell measured as distance from
+nominal — a cell already over-covering gets no credit for moving further away.
+Worst regression: 0.8 points on a cell already at 98.5%, inside Monte Carlo
+error. The determinism golden caught the change and was re-recorded deliberately
+(1.5055276 → 1.5047720, three orders of magnitude above its 1e-9 tolerance).
+
+### The mechanism, which still stands
+
+Of the intervals that failed to cover, before these fixes:
+
+| cell | share of misses from a **below-median** SE |
+|---|---|
+| benign | 40.0% |
+| moderate-overlap | **98.5%** |
+| strong-confounding | **100.0%** |
+
+Under independence that is 50%. The heavy-weight units carry the correction that
+removes confounding bias; a sample without them produces both a small variance
+estimate and an estimate that is off. It is confident *because* it is wrong.
+
+That is why no degrees-of-freedom rule closed this on its own — a dof rule
+scales every interval by the same factor, and a fixed `dof = 4` brings the heavy
+cells to 96.0% while taking `benign` to 99.8%. **Under heavy weights a small
+reported standard error is still not evidence of precision.** Read
+`Diagnostics::effective_n` and `Diagnostics::variance_dof`.
 
 ### Three hypotheses refuted by measurement
 
 **"The propensity model is estimated from the same data, and that is the second
-noise source."** This was the finding's own stated explanation for the residual
-gap. It is wrong. Substituting the DGP's *true* propensity isolates the sources,
-and the noise does not move:
+noise source."** This document's own explanation, and wrong. With the DGP's true
+propensity substituted, cv(se) is 0.276 against 0.272 fitted, and 0.255 against
+0.253. Propensity estimation contributes essentially nothing to the *noise*. (It
+contributes a great deal to *efficiency* — true-propensity sd 0.237 against 0.148
+fitted, the textbook result, and a check that the substitution worked.)
 
-| cell / propensity | cv(se) |
-|---|---|
-| moderate-overlap / **true** | 0.276 |
-| moderate-overlap / fitted | 0.272 |
-| strong-confounding / **true** | 0.255 |
-| strong-confounding / fitted | 0.253 |
+**"The sample fourth moment is biased down, so compute it from the model."** The
+bias is real — `S4`'s median is 1.39e-1 against a mean of 1.66e-1 — but the fix
+made it worse: `nu` went from 14.5 to 30.6 and coverage fell. It treats the
+outcome residual's moments as independent of the propensity, and under
+confounding they are not; that is what confounding means.
 
-Propensity estimation contributes essentially nothing to the noise in the
-standard error. It is heavy tails, entirely. (It contributes a great deal to the
-*efficiency*: the true-propensity estimator has sd 0.237 against 0.148 for the
-fitted one, which is the textbook result and a good check that the substitution
-worked.)
+**"It is the overlap clamp."** Binds on 0.69% of units at moderate-overlap, 1.00%
+at strong confounding, and 0.00% at high-dim, which under-covered regardless.
 
-**"The sample fourth moment is biased down, so compute it from the model."**
-`S4`'s median is 1.39e-1 against a mean of 1.66e-1 at strong confounding, so the
-downward bias is real and it does inflate `nu`. Replacing it with an expectation
-over `T_i ~ Bernoulli(e_i)` — using every unit in both arms, so the `1/e` tail
-is fully represented — made it **worse**: `nu` went from 14.5 to 30.6 and
-coverage fell. The reason is an assumption hidden in the substitution: it treats
-the outcome residual's moments as independent of the propensity, and under
-confounding they are not independent — *that is what confounding means*. Units
-with extreme `e` also have extreme outcomes, so the true fourth moment far
-exceeds the product of the marginals. The code is kept, unused and documented,
-so the next person does not have the idea twice.
+### Also landed: Kish rather than Satterthwaite
 
-**"It is the overlap clamp."** Clamping to `[0.02, 0.98]` binds on **0.69%** of
-units at moderate-overlap and **1.00%** at strong confounding, and **0.00%** at
-high-dim — which covers at 91.8% regardless. Not the mechanism.
+`nu = 2 (sum psi^2)^2 / (sum psi^4 - ...)`. The factor of two is
+`Var(chi^2_nu) = 2 nu`, which holds for squares of Gaussians. Heavy tails are
+the only condition under which this correction matters, and under heavy tails
+`psi^2` has a coefficient of variation above the Gaussian value — so the true
+dof is *below* `2 x Kish`. Dropping the factor gives Kish's effective sample
+size, already reported as `effective_n`, applied to the influence contributions.
 
-### The ceiling, and why the bar stays where it is
+The check that it is right rather than merely helpful: the new dof matches the
+dof the observed noise implies.
 
-Residual bias caps achievable coverage independently of the interval:
+| cell | implied by cv(se) | Satterthwaite | Kish |
+|---|---|---|---|
+| moderate-overlap | 6.8 | 16.5 | **8.2** |
+| strong-confounding | 7.8 | 14.2 | **7.1** |
 
-| cell | bias / sd | coverage ceiling |
-|---|---|---|
-| moderate-overlap | 0.19 | ~94.6% |
-| strong-confounding | 0.27 | ~94.1% |
-| high-dim | 0.02 | ~95.0% |
+Invisible where it should be: `benign` goes 803 → 334, and `t(0.975, 334)` is
+1.967 against 1.963.
 
-`P(|Z + 0.27| < 1.96)` is 94.1%, not 95%. So two of the three cells cannot reach
-nominal by any interval construction, and `high-dim` — which can — is the cell
-where the remaining work is well defined.
+### What is left, for ATT
 
-The specs stay at a **3-point** bar. Monte Carlo standard error at 300
-replications is about 1.2 points, so 3 points is a real requirement. Coverage is
-now 91.2–91.8%, so they still fail, by 1.2 to 1.8 points.
+ATT's bias is 0.05 sd, so its ceiling is essentially nominal and the remaining
+gap is entirely the interval: `se/sd` is **0.950** at strong confounding against
+1.037 on benign data. The dof is well calibrated (5.6 against the 5.5 the noise
+implies), so it is a scale problem, not a noise problem.
 
-### What is left
+The projection borrowed from the ATE case is not the correct adjustment for ATT
+— Hahn's efficient influence function for ATT with an estimated propensity has a
+different correction term, and it needs an outcome model. That is augmented IPW,
+which is new capability rather than a fix to this one.
 
-- **`high-dim` is the tractable one.** Zero bias, 91.8% coverage, `k/n = 6.5%`.
-  A cross-fitted (sample-split) projection would remove the remaining in-sample
-  dependence that `(n - k)` only approximates.
-- **The heavy cells need a different estimator, not a different interval.**
-  Augmented IPW / doubly-robust estimation attacks the bias, which is the
-  binding constraint there. That is new capability, not a fix to this one.
-- **Surface the anti-informative property.** `variance_dof` in the single digits
-  is the signal, and it is currently a field a caller has to know to read.
+**Until it closes**, `ipw` is nominal and can be used directly. For `att`, prefer
+`ols_adjusted` where the outcome model is plausibly linear, and treat a narrow
+ATT interval under heavy weights as the case to distrust.
 
-**Until it closes**, prefer `ols_adjusted` when the outcome model is plausibly
-linear — it is nominal on every cell — and treat a narrow IPW interval under
-heavy weights as the case to distrust, not the case to trust.
-
-Specs: `c14_ipw_coverage_is_nominal_under_strong_confounding`,
-`c14_att_coverage_is_nominal_under_strong_confounding`. Guards:
+Specs: `c14_att_coverage_is_nominal_under_strong_confounding` (open).
+Closed: `c14_ipw_coverage_is_nominal_under_strong_confounding`. Guards:
 `few_variance_degrees_of_freedom_widen_the_interval`,
 `ipw_bootstrap_agrees_on_the_point_estimate_and_labels_itself`,
-`projection_correction_scales_with_the_coefficients_spent`,
-`effective_dof_is_the_kish_effective_count`,
+`leverage_rescaling_restores_what_the_fit_shrank`,
+`leverage_stays_within_bounds`, `effective_dof_is_the_kish_effective_count`,
 `the_rule_never_claims_more_than_satterthwaite_did`. Diagnostics:
 `cargo test -p cynepic-causal --lib c14 -- --ignored --nocapture --test-threads=1`.
 

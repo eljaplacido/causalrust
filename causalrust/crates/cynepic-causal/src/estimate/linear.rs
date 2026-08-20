@@ -467,6 +467,51 @@ impl QrPivoted {
         beta
     }
 
+    /// Leverage `h_ii` for each row of the design that was factored.
+    ///
+    /// `h_ii = s_i' (S'S)^-1 s_i`, the diagonal of the hat matrix — how much of
+    /// its own fitted value a row supplies. Computed as `||R^-T P' s_i||^2` by
+    /// forward substitution, so `S'S` is never formed and its condition number
+    /// is never squared.
+    ///
+    /// # What it is for here
+    ///
+    /// A residual from a `k`-coefficient fit is shrunk toward zero by a factor
+    /// of `1 - h_ii`. The usual `n / (n - k)` correction spreads that shrinkage
+    /// evenly across rows, which is right only when every row has the same
+    /// leverage. Where a handful of rows dominate the fit — heavy propensity
+    /// weights, exactly the case finding C14 is about — those rows are shrunk
+    /// far more than average and an even correction under-corrects.
+    ///
+    /// This is the same reasoning behind HC2/HC3 robust standard errors, which
+    /// this crate already uses for OLS.
+    pub(crate) fn leverages(&self, a: &[f64]) -> Vec<f64> {
+        let mut out = vec![0.0; self.rows];
+        let k = self.rank.min(self.cols);
+        if k == 0 {
+            return out;
+        }
+        for (i, slot) in out.iter_mut().enumerate() {
+            // Permute the row to match R's column order.
+            let mut z = vec![0.0; k];
+            for j in 0..k {
+                let v = a[i * self.cols + self.perm[j]];
+                // Forward substitution through R', which is lower triangular.
+                let sum: f64 = (0..j).map(|m| self.qr[m * self.cols + j] * z[m]).sum();
+                let diag = self.qr[j * self.cols + j];
+                z[j] = if diag.abs() > f64::EPSILON {
+                    (v - sum) / diag
+                } else {
+                    0.0
+                };
+            }
+            // Leverage is bounded by 1 in exact arithmetic; clamp so rounding
+            // cannot produce a negative `1 - h` downstream.
+            *slot = z.iter().map(|x| x * x).sum::<f64>().clamp(0.0, 1.0);
+        }
+        out
+    }
+
     /// `(X'X)^-1` for the permuted system, computed from R alone.
     ///
     /// `(X'X)^-1 = R^-1 R^-T`, which avoids ever forming `X'X` — the step that

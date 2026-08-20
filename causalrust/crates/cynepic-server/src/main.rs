@@ -68,6 +68,7 @@ impl From<EstimationError> for Failure {
             EstimationError::NoObservations => "no_observations",
             EstimationError::EmptyArm { .. } => "empty_arm",
             EstimationError::InsufficientData { .. } => "insufficient_data",
+            EstimationError::CrossFittingNotApplicable { .. } => "cross_fitting_not_applicable",
             EstimationError::RankDeficient { .. } => "rank_deficient",
             EstimationError::NotConverged { .. } => "not_converged",
             EstimationError::Separation { .. } => "separation",

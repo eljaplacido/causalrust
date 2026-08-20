@@ -58,6 +58,40 @@ pub enum EstimationError {
         p: usize,
     },
 
+    /// Cross-fitting was asked for on data too thin to support it.
+    ///
+    /// Refitting the propensity model on a training split and applying it to
+    /// held-out units removes in-sample optimism — but only if each split can
+    /// determine the model. Where it cannot, the out-of-fold scores become
+    /// extreme, the weights follow, and the estimate is *far* more variable
+    /// than the in-sample version while reporting a similar standard error.
+    ///
+    /// Measured at the `high-dim` grid cell (`p = 25`, `n = 400`): interval
+    /// coverage falls from 90.5% to **46.5%**, with the sampling sd nearly
+    /// doubling and **no replication refusing**. That is a confident wrong
+    /// answer, which is the failure mode this crate exists to avoid, so it is
+    /// refused up front rather than delivered.
+    ///
+    /// The bound is the events-per-variable rule of thumb from logistic
+    /// regression: the smaller arm of each training split must carry at least
+    /// [`MIN_EVENTS_PER_PARAMETER`](crate::estimate::propensity::MIN_EVENTS_PER_PARAMETER)
+    /// units per fitted coefficient.
+    ///
+    /// Use plain `ipw` instead — it is *better* here, which is the unusual part.
+    #[error(
+        "cross-fitting needs {required} units in the smaller arm of each training \
+         split to fit {parameters} parameters, but has {available}; use `ipw` \
+         instead, which does not split the sample"
+    )]
+    CrossFittingNotApplicable {
+        /// Units in the smaller arm of the thinnest training split.
+        available: usize,
+        /// Units that would be needed.
+        required: usize,
+        /// Coefficients the propensity model fits.
+        parameters: usize,
+    },
+
     /// The design matrix is rank deficient: some column is an exact (or
     /// numerically exact) linear combination of others.
     ///

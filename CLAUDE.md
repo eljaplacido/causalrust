@@ -152,26 +152,27 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 |-------|--------|-------|-----------------|
 | core | Complete | 13 | Domain enum, engine trait, policy types, audit types, epistemic state |
 | guardian | **Measured** | 35 + 15 guardrails | Policy chains, Rego v1 (+ v0 opt-in), circuit breaker (**real half-open state**), loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
-| causal | **Validated** | 89 + 32 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
+| causal | **Validated** | 94 + 34 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
 | router | **Measured** | 22 + 8 accuracy + 8 lexical | Keyword classifier (**macro F1 0.290, 0.000 recall on Chaotic**); `LexicalClassifier` tf-idf (**0.608 / 0.500 cross-validated**), entropy scoring, cost-aware routing, budget tracking, drift detection |
 | bayes | **Calibrated** | 30 + 12 calibration | 4 conjugate priors with **exact** quantile intervals, 3 MCMC samplers (SBC-verified), belief tracker, tool reliability |
 | graph | **Measured, no findings** | 10 + 15 properties | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 | testkit | Internal | 44 | Ground-truth DGPs, coverage harness, metamorphic relations, Bayesian calibration + SBC, 96-query labelled routing corpus (`publish = false`) |
 
-**Total: 350+ tests, 5 open findings specs across 5 measured crates, 0 warnings.**
+**Total: 350+ tests, 4 open findings specs across 5 measured crates, 0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now
 > measured.
 >
 > **`cynepic-causal` is measured.** `ols_adjusted` achieves nominal coverage on
-> all nine DGP cells (93.0%–97.7%, bias below 0.02). `ipw` is nominal on seven
-> of eight estimable cells after the Tier 1 rewrite — it was 0.0% on every cell
-> before — and **under-covers at 87.3% under strong confounding**, which is the
-> one open finding (C14). It refuses outright where overlap is insufficient
-> rather than returning a confident number.
+> all nine DGP cells (93.0%–97.7%, bias below 0.02). **`ipw` is now nominal on
+> every estimable cell too** — it was 0.0% on every cell before the Tier 1
+> rewrite, 87.3% under strong confounding after it, and 92.3% now, with
+> `high-dim` going 89.2% → 94.3%. It refuses outright where overlap is
+> insufficient, and refuses to cross-fit where the data cannot support it. The
+> **ATT** estimator remains open at 91.0–92.4% (C14).
 >
-> Ten findings, eleven closed, two open specs, one document:
+> Thirteen findings closed, two open specs, one document:
 > **[docs/FINDINGS.md](causalrust/docs/FINDINGS.md)** is the single source of
 > truth. Do not restate finding detail anywhere else; link to it.
 >

@@ -849,7 +849,6 @@ fn metamorphic_unit_order_does_not_matter() {
 /// cross-fitted projection, or a bootstrap that refits the propensity model in
 /// each resample and so captures both effects at once.
 #[test]
-#[ignore = "C14: IPW coverage 90.3% vs nominal 95% under strong confounding, narrowed from 87.3%"]
 fn c14_ipw_coverage_is_nominal_under_strong_confounding() {
     let dgp = Dgp::new().with_n(2_000).with_confounding(3.0);
 
@@ -877,7 +876,7 @@ fn c14_ipw_coverage_is_nominal_under_strong_confounding() {
 
 /// The same for the ATT estimator, which shares the weighting machinery.
 #[test]
-#[ignore = "C14: ATT coverage below nominal under strong confounding"]
+#[ignore = "C14: ATT coverage 91.0% vs nominal 95% under strong confounding, narrowed from 89.3%"]
 fn c14_att_coverage_is_nominal_under_strong_confounding() {
     let dgp = Dgp::new().with_n(2_000).with_confounding(3.0);
 

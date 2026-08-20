@@ -121,7 +121,14 @@ fn ipw_agrees_across_platforms_to_a_stated_tolerance() {
     // what clippy insists on, and rewriting a recorded value to satisfy a
     // formatting lint is how a golden quietly stops being the thing that was
     // measured.
-    const GOLDEN_ATE: f64 = f64::from_bits(0x3ff8_16a4_15bb_212e);
+    //
+    // Re-recorded once, deliberately. `ipw` now fits the propensity model
+    // out-of-fold where the data supports it (finding C14), which changes the
+    // weights and therefore the estimate: 1.5055276 -> 1.5047720, a shift of
+    // 5e-4 — three orders of magnitude above the 1e-9 tolerance below, so this
+    // test failed loudly rather than absorbing the change. That is the golden
+    // doing its job: a value is only allowed to move when someone says why.
+    const GOLDEN_ATE: f64 = f64::from_bits(0x3ff8_138b_c247_e7c7);
     const TOL: f64 = 1e-9;
 
     let dev = (r.ate() - GOLDEN_ATE).abs();

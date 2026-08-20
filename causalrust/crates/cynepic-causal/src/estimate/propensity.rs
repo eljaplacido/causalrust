@@ -287,8 +287,189 @@ impl PropensityScoreEstimator {
         covariates: &Array2<f64>,
     ) -> Result<ATEResult, EstimationError> {
         check_lengths("treatment", treatment.len(), "outcome", outcome.len())?;
-        let model = Self::fit_propensity(treatment, covariates)?;
+        let model = Self::default_propensity(treatment, covariates)?;
         Self::ipw_with_model(treatment, outcome, &model)
+    }
+
+    /// The propensity model the weighted estimators use by default.
+    ///
+    /// Cross-fitted where the data can support it, in-sample where it cannot.
+    ///
+    /// # Why this is the default rather than an opt-in
+    ///
+    /// It changes the point estimate, so it is not a change to make lightly.
+    /// The evidence is the whole standard grid, 400 replications, interval
+    /// coverage against a 95% nominal — measured as *distance from nominal*, so
+    /// a cell that was already over-covering gets no credit for moving further
+    /// away:
+    ///
+    /// ```text
+    ///   cell                     in-sample   adaptive    delta
+    ///   benign                       96.8%      96.8%     +0.0
+    ///   moderate-overlap             91.0%      93.0%     +2.0
+    ///   strong-confounding           92.2%      93.8%     +1.5
+    ///   weak-overlap                (refused)  (refused)   n/a
+    ///   nonlinear                    96.0%      96.0%     +0.0
+    ///   heteroskedastic              97.5%      97.2%     +0.2
+    ///   heterogeneous-effects        98.5%      99.2%     -0.8
+    ///   small-n                      96.0%      96.0%     +0.0
+    ///   high-dim                     90.5%      90.5%     +0.0
+    ///   very-high-dim                91.0%      91.0%     +0.0
+    /// ```
+    ///
+    /// It repairs the two cells finding C14 is about and moves nothing else.
+    /// The single regression is 0.8 points on a cell already over-covering at
+    /// 98.5%, which is inside the Monte Carlo standard error at this
+    /// replication count.
+    ///
+    /// The cells that show `+0.0` are the ones where the events-per-variable
+    /// guard **refuses** cross-fitting and this falls back — which is the guard
+    /// doing its job, not cross-fitting being harmless there. Forced on,
+    /// `high-dim` covers at **46.5%**.
+    fn default_propensity(
+        treatment: &Array1<f64>,
+        covariates: &Array2<f64>,
+    ) -> Result<PropensityModel, EstimationError> {
+        match Self::cross_fitted_propensity(treatment, covariates, CROSS_FIT_FOLDS) {
+            Err(EstimationError::CrossFittingNotApplicable { .. }) => {
+                Self::fit_propensity(treatment, covariates)
+            }
+            other => other,
+        }
+    }
+
+    /// Fit the propensity model out-of-fold, so no unit's weight is derived
+    /// from its own outcome.
+    ///
+    /// # The defect this exists for
+    ///
+    /// `fit_propensity` fits on every unit and then scores those same units. The
+    /// fitted scores are therefore in-sample, and the influence-function
+    /// variance built from them is too small — the projection removes variance
+    /// the propensity model only appears to explain because it was tuned on
+    /// this data.
+    ///
+    /// Measured, this is invisible where `p / n` is small and severe where it is
+    /// not. At the `high-dim` grid cell (`p = 25`, `n = 400`) the reported
+    /// standard error is **0.807 of the true sampling sd** — a 19% understatement
+    /// with essentially zero bias in the point estimate (0.02 sd). The interval
+    /// was simply wrong, and finding C14 records it.
+    ///
+    /// The HC3 leverage rescaling inside the projection is a first-order patch
+    /// on the same problem. Cross-fitting removes the cause instead of
+    /// correcting the symptom, and the two are complementary.
+    ///
+    /// # How the folds are chosen
+    ///
+    /// By index, `i % folds`. Deterministic on every platform and every run,
+    /// which a component whose decisions reach an audit trail needs more than it
+    /// needs a shuffle. The data carries no ordering that fold assignment could
+    /// exploit — and if a caller's data *is* ordered, that is worth knowing
+    /// about for reasons beyond this function.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ipw`], plus [`EstimationError::InsufficientData`] if any fold
+    /// leaves too few units to fit on.
+    pub fn ipw_cross_fitted(
+        treatment: &Array1<f64>,
+        outcome: &Array1<f64>,
+        covariates: &Array2<f64>,
+        folds: usize,
+    ) -> Result<ATEResult, EstimationError> {
+        let model = Self::cross_fitted_propensity(treatment, covariates, folds)?;
+        Self::ipw_with_model(treatment, outcome, &model)
+    }
+
+    /// Propensity scores where every unit's score came from a model fitted
+    /// without it.
+    ///
+    /// Refuses rather than splitting a sample too thin to support it — see
+    /// [`EstimationError::CrossFittingNotApplicable`] for the measurement that
+    /// makes that refusal necessary.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fit_propensity`], applied to each training split.
+    pub fn cross_fitted_propensity(
+        treatment: &Array1<f64>,
+        covariates: &Array2<f64>,
+        folds: usize,
+    ) -> Result<PropensityModel, EstimationError> {
+        check_lengths(
+            "treatment",
+            treatment.len(),
+            "covariates",
+            covariates.nrows(),
+        )?;
+        let n = treatment.len();
+        let p = covariates.ncols();
+        let folds = folds.max(2);
+        if n == 0 {
+            return Err(EstimationError::NoObservations);
+        }
+
+        // Can each training split determine the model? Splitting a sample that
+        // cannot is worse than not splitting it — measurably, and without any
+        // symptom the caller would notice.
+        let parameters = p + 1;
+        let n_treated = treatment.iter().filter(|t| **t > 0.5).count();
+        let n_control = n - n_treated;
+        // Each training split holds `(folds - 1) / folds` of the data, so the
+        // thinnest arm it can offer is that share of the smaller arm.
+        let smaller_arm = n_treated.min(n_control);
+        let available = smaller_arm.saturating_mul(folds - 1) / folds;
+        let required = parameters.saturating_mul(MIN_EVENTS_PER_PARAMETER);
+        if available < required {
+            return Err(EstimationError::CrossFittingNotApplicable {
+                available,
+                required,
+                parameters,
+            });
+        }
+
+        // A full-sample fit supplies the design matrix and the fallback
+        // coefficients. Its *scores* are then discarded and replaced fold by
+        // fold, which is the entire point.
+        let mut model = Self::fit_propensity(treatment, covariates)?;
+
+        for fold in 0..folds {
+            let train: Vec<usize> = (0..n).filter(|i| i % folds != fold).collect();
+            let held: Vec<usize> = (0..n).filter(|i| i % folds == fold).collect();
+            if held.is_empty() {
+                continue;
+            }
+
+            // A fold whose training split has no treated or no control unit
+            // cannot produce a propensity model. Rather than fail the whole
+            // estimate, that fold keeps its in-sample scores and the
+            // convergence flag records that the fit was not clean.
+            let t_train = Array1::from_iter(train.iter().map(|&i| treatment[i]));
+            let n_treated = t_train.iter().filter(|t| **t > 0.5).count();
+            if n_treated == 0 || n_treated == train.len() || train.len() <= p + 1 {
+                continue;
+            }
+            let mut x_train = Array2::zeros((train.len(), p));
+            for (r, &i) in train.iter().enumerate() {
+                for j in 0..p {
+                    x_train[[r, j]] = covariates[[i, j]];
+                }
+            }
+
+            let Ok(fold_model) = Self::fit_propensity(&t_train, &x_train) else {
+                continue;
+            };
+            for &i in &held {
+                let mut z = fold_model.coefficients.first().copied().unwrap_or(0.0);
+                for j in 0..p {
+                    z += fold_model.coefficients.get(j + 1).copied().unwrap_or(0.0)
+                        * covariates[[i, j]];
+                }
+                model.scores[i] = logistic(z);
+            }
+        }
+
+        Ok(model)
     }
 
     /// IPW using an already-fitted propensity model.
@@ -419,10 +600,9 @@ impl PropensityScoreEstimator {
         // influence is `psi_i - b'S_i` where `b` solves the least-squares
         // problem `psi ~ S`. What remains is the part of the influence that the
         // propensity model could not have explained.
-        let (residual_psi, proj_k) = project_off_propensity_score(&psi, treatment, model);
+        let residual_psi = project_off_propensity_score(&psi, treatment, model);
         let var_sum: f64 = residual_psi.iter().map(|v| v * v).sum();
-        let var = var_sum * projection_dof_correction(n, proj_k) / (n_f * n_f);
-        let std_error = var.max(0.0).sqrt();
+        let std_error = (var_sum / (n_f * n_f)).max(0.0).sqrt();
         let variance_dof = effective_variance_dof(&residual_psi);
 
         // Kish effective sample size: the honest n behind a weighted estimate.
@@ -588,7 +768,7 @@ impl PropensityScoreEstimator {
         covariates: &Array2<f64>,
     ) -> Result<ATEResult, EstimationError> {
         check_lengths("treatment", treatment.len(), "outcome", outcome.len())?;
-        let model = Self::fit_propensity(treatment, covariates)?;
+        let model = Self::default_propensity(treatment, covariates)?;
         let n = treatment.len();
 
         let n_extreme = model.n_extreme();
@@ -657,10 +837,9 @@ impl PropensityScoreEstimator {
         // ATT weights depend on the fitted model at least as strongly as ATE
         // weights do, so omitting it here left this estimator over-covering at
         // 100% with intervals roughly three times wider than they needed to be.
-        let (residual_psi, proj_k) = project_off_propensity_score(&psi, treatment, &model);
+        let residual_psi = project_off_propensity_score(&psi, treatment, &model);
         let var_sum: f64 = residual_psi.iter().map(|v| v * v).sum();
-        let var = var_sum * projection_dof_correction(n, proj_k) / (n_f * n_f);
-        let std_error = var.max(0.0).sqrt();
+        let std_error = (var_sum / (n_f * n_f)).max(0.0).sqrt();
         let variance_dof = effective_variance_dof(&residual_psi);
 
         ATEResult::new(
@@ -682,9 +861,6 @@ impl PropensityScoreEstimator {
 
 /// Project an influence function off the propensity model's score.
 ///
-/// Returns the residual contributions and the number of coefficients the
-/// projection consumed, which the caller needs for the `(n - k)` correction.
-///
 /// Returns the residual from regressing `psi` on the score contributions
 /// `S_i = x_i (T_i - e_i)`. The design used here is `[1 | X]`, matching the
 /// propensity fit, and the regression is solved with the same pivoted QR the
@@ -698,11 +874,11 @@ fn project_off_propensity_score(
     psi: &[f64],
     treatment: &Array1<f64>,
     model: &PropensityModel,
-) -> (Vec<f64>, usize) {
+) -> Vec<f64> {
     let n = psi.len();
     let cols = model.coefficients.len();
     if n <= cols || cols == 0 {
-        return (psi.to_vec(), 0);
+        return psi.to_vec();
     }
 
     // Rebuild the score contributions. `coefficients` is [intercept, betas...],
@@ -721,43 +897,47 @@ fn project_off_propensity_score(
 
     let names: Vec<String> = (0..cols).map(|j| format!("score[{j}]")).collect();
     let Ok(qr) = QrPivoted::factor(&score, n, cols, &names) else {
-        return (psi.to_vec(), 0);
+        return psi.to_vec();
     };
-    let rank = qr.rank;
     let b = qr.solve(psi);
+    let leverage = qr.leverages(&score);
 
-    let residual = (0..n)
+    // HC2: divide each squared residual by `1 - h_ii` rather than scaling the
+    // whole sum by `n / (n - k)`.
+    //
+    // A residual from a k-coefficient fit is shrunk by `1 - h_ii`. The even
+    // correction is right only when every row has the same leverage. Under
+    // heavy propensity weights a handful of rows dominate the fit and are
+    // shrunk far more than average, so the even correction under-corrects —
+    // measured, ATT's reported standard error came out at 0.93 of the true
+    // sampling sd at strong confounding while sitting at 1.05 on benign data.
+    //
+    // Removing the projection entirely was tried and is worse in the other
+    // direction: benign then covers at 100.0% with intervals 2.1x wider than
+    // they need to be. The projection is right; its finite-sample correction
+    // was not.
+    //
+    // Returned pre-scaled, so the caller sums squares as before.
+    (0..n)
         .map(|i| {
             let fitted: f64 = (0..cols).map(|j| score[i * cols + j] * b[j]).sum();
-            psi[i] - fitted
+            let r = psi[i] - fitted;
+            // Guard the extreme: a row with leverage at 1 is fitted exactly and
+            // its residual carries no information, so inflating it without
+            // bound would be inventing variance rather than recovering it.
+            let shrink = (1.0 - leverage[i]).max(MIN_LEVERAGE_COMPLEMENT);
+            r / shrink
         })
-        .collect();
-    (residual, rank)
+        .collect()
 }
 
-/// Rescale a projected sum of squares for the coefficients the projection spent.
+/// Floor on `1 - h_ii` when rescaling a projected residual.
 ///
-/// `project_off_propensity_score` returns residuals from a `k`-coefficient
-/// least-squares fit, so `sum(residual^2)` is a **residual** sum of squares and
-/// is biased low by exactly the factor `(n - k) / n` — the same reason an OLS
-/// variance divides by `n - k` and not by `n`. The variance here divided by
-/// `n^2` and made no such correction.
-///
-/// At `n = 2000` with a handful of covariates this is a quarter of one percent
-/// and invisible, which is why it survived. At the `high-dim` cell — `p = 25`,
-/// so `k = 26`, on `n = 400` — it is **6.5%** of the variance, and that cell
-/// covers at 89.2% with a bias of 0.02 sd. Nothing was wrong with the point
-/// estimate there; the interval was simply too narrow, and this is why.
-fn projection_dof_correction(n: usize, k: usize) -> f64 {
-    if k == 0 || n <= k + 1 {
-        return 1.0;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    {
-        n as f64 / (n - k) as f64
-    }
-}
-
+/// A row with leverage at 1 is fitted exactly, so its residual is zero and
+/// carries no information about the variance. Dividing by `1 - h_ii` without a
+/// floor turns that into an unbounded inflation — inventing variance rather
+/// than recovering it. The floor caps any single row's contribution at 20x.
+const MIN_LEVERAGE_COMPLEMENT: f64 = 0.05;
 /// Effective degrees of freedom for a sum-of-squares variance estimate.
 ///
 /// The variance of a weighted estimator is `sum(psi_i^2) / n^2`. That sum is
@@ -824,6 +1004,26 @@ fn effective_variance_dof(psi: &[f64]) -> Option<f64> {
     }
 }
 
+/// Folds used by the default propensity fit.
+///
+/// Five is the usual choice: enough that each training split holds 80% of the
+/// data, few enough that the cost is five logistic fits rather than `n`.
+pub const CROSS_FIT_FOLDS: usize = 5;
+
+/// Units required in the smaller arm of a training split, per fitted parameter,
+/// before cross-fitting is allowed.
+///
+/// The events-per-variable rule of thumb for logistic regression, at the upper
+/// end of the range usually quoted (10–20). The upper end because the cost of
+/// being wrong here is asymmetric: below it, cross-fitting does not merely lose
+/// efficiency, it produces a confident wrong interval — 46.5% coverage with no
+/// refusals at `p = 25, n = 400`.
+///
+/// It is a rule of thumb and is named as one. What is measured is which side of
+/// it each grid cell falls on, and that the split matches where cross-fitting
+/// stops helping and starts harming.
+pub const MIN_EVENTS_PER_PARAMETER: usize = 20;
+
 /// Logistic function, computed so neither tail overflows.
 fn logistic(x: f64) -> f64 {
     if x >= 0.0 {
@@ -837,37 +1037,68 @@ fn logistic(x: f64) -> f64 {
 #[cfg(test)]
 mod dof_rules {
     use super::*;
+    use crate::estimate::linear::QrPivoted;
 
-    /// The projection spends coefficients, and the variance must pay for them.
+    /// A row that dominates its own fit must have its residual restored.
     #[test]
-    fn projection_correction_scales_with_the_coefficients_spent() {
-        // `high-dim`: p = 25 so the score matrix has 26 columns, on n = 400.
-        let c = projection_dof_correction(400, 26);
-        assert!(
-            (c - 400.0 / 374.0).abs() < 1e-12,
-            "expected n/(n-k), got {c}"
-        );
-        // 6.5% of the variance, which is 3.2% of the standard error. That cell
-        // covered at 89.2% with a bias of 0.02 sd — nothing was wrong with the
-        // point estimate, the interval was simply too narrow.
-        assert!(c > 1.06 && c < 1.08, "correction should be ~6.9%, got {c}");
+    fn leverage_rescaling_restores_what_the_fit_shrank() {
+        // One row far from the rest carries high leverage: the fit passes
+        // through it, so its raw residual understates the variance it
+        // contributes.
+        let n = 40;
+        let cols = 2;
+        let mut design = vec![0.0; n * cols];
+        for i in 0..n {
+            design[i * cols] = 1.0;
+            #[allow(clippy::cast_precision_loss)]
+            {
+                design[i * cols + 1] = if i == 0 { 50.0 } else { i as f64 / 40.0 };
+            }
+        }
+        let names = vec!["intercept".to_string(), "x".to_string()];
+        let qr = QrPivoted::factor(&design, n, cols, &names).expect("full rank");
+        let h = qr.leverages(&design);
 
-        // At the sample sizes where this went unnoticed it is invisible, which
-        // is exactly why it went unnoticed.
-        let big = projection_dof_correction(2_000, 5);
         assert!(
-            big < 1.003,
-            "at n=2000, k=5 the correction is a quarter of a percent, got {big}"
+            h[0] > 0.9,
+            "the outlying row should dominate its own fit, got h = {}",
+            h[0]
+        );
+        assert!(
+            h[1..].iter().all(|v| *v < 0.2),
+            "ordinary rows should have low leverage: {:?}",
+            &h[1..5]
+        );
+        // Leverages sum to the rank. This is the identity that makes the
+        // computation checkable rather than merely plausible.
+        let total: f64 = h.iter().sum();
+        assert!(
+            (total - 2.0).abs() < 1e-8,
+            "leverages must sum to the rank (2), got {total}"
         );
     }
 
-    /// Degenerate inputs must not produce a correction that inflates or divides
-    /// by zero.
+    /// Leverage is bounded, and the floor keeps a fitted-exactly row finite.
     #[test]
-    fn projection_correction_is_one_when_it_cannot_apply() {
-        assert!((projection_dof_correction(400, 0) - 1.0).abs() < f64::EPSILON);
-        assert!((projection_dof_correction(10, 10) - 1.0).abs() < f64::EPSILON);
-        assert!((projection_dof_correction(10, 20) - 1.0).abs() < f64::EPSILON);
+    fn leverage_stays_within_bounds() {
+        let n = 12;
+        let cols = 2;
+        let mut design = vec![0.0; n * cols];
+        for i in 0..n {
+            design[i * cols] = 1.0;
+            #[allow(clippy::cast_precision_loss)]
+            {
+                design[i * cols + 1] = i as f64;
+            }
+        }
+        let names = vec!["intercept".to_string(), "x".to_string()];
+        let qr = QrPivoted::factor(&design, n, cols, &names).expect("full rank");
+        for h in qr.leverages(&design) {
+            assert!((0.0..=1.0).contains(&h), "leverage out of range: {h}");
+        }
+        // A zero floor would let a row fitted exactly inflate the variance
+        // without bound, so the constant must leave headroom.
+        const _: () = assert!(MIN_LEVERAGE_COMPLEMENT > 0.0);
     }
 
     /// The dof rule is Kish's effective count, which is Satterthwaite without
@@ -1311,7 +1542,7 @@ mod c14_diagnostics {
                         continue;
                     };
                     let (psi, ..) = influence(&d.treatment, &d.outcome, &model);
-                    let (residual, _k) = project_off_propensity_score(&psi, &d.treatment, &model);
+                    let residual = project_off_propensity_score(&psi, &d.treatment, &model);
                     ates.push(r.ate());
                     ses.push(r.std_error());
                     if let Some(v) = effective_variance_dof(&residual) {
@@ -1397,7 +1628,7 @@ mod c14_diagnostics {
                     continue;
                 };
                 let (psi, ..) = influence(&d.treatment, &d.outcome, &model);
-                let (residual, _k) = project_off_propensity_score(&psi, &d.treatment, &model);
+                let residual = project_off_propensity_score(&psi, &d.treatment, &model);
                 // Normalised so cells are comparable: S4 / S2^2 is what nu
                 // depends on, and it is invariant to rescaling psi.
                 let s2: f64 = residual.iter().map(|v| v * v).sum();
@@ -1603,6 +1834,415 @@ mod c14_diagnostics {
         );
     }
 
+    /// Does fitting the propensity out-of-fold repair the interval?
+    ///
+    /// Reports coverage, `se/sd` and `cv(se)` for the in-sample fit against a
+    /// 5-fold cross-fit on every grid cell. Cross-fitting is expected to help
+    /// most where `p / n` is largest and to cost a little efficiency
+    /// everywhere — the question this answers is whether the trade is worth
+    /// taking by default or only where it is needed.
+    /// Does the projection over-remove variance once the scores are
+    /// cross-fitted?
+    ///
+    /// The projection exists to correct for the propensity being *estimated*.
+    /// Cross-fitting removes a different part of the same problem. If the two
+    /// overlap, applying both takes out variance twice and the interval comes
+    /// out too narrow — which is what ATT's `se/sd = 0.927` looks like.
+    ///
+    /// Four combinations, one table. Whichever way it comes out, one hypothesis
+    /// dies.
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_does_the_projection_double_count_with_cross_fitting() {
+        const REPS: usize = 400;
+        let cells: [(&str, Dgp); 8] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("heterogeneous-effects", Dgp::new().with_heterogeneity(1.5)),
+            ("nonlinear", Dgp::new().with_nonlinearity(2.0)),
+            ("heteroskedastic", Dgp::new().heteroskedastic()),
+            ("small-n", Dgp::new().with_n(120)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+        ];
+
+        println!("\nC14 — ATT: does the projection help or hurt? {REPS} replications\n");
+        println!(
+            "  {:<28} {:>10} {:>9} {:>9}",
+            "cell / projection", "coverage", "se/sd", "cv(se)"
+        );
+
+        for (name, dgp) in cells {
+            let cross = true;
+            for project in [true, false] {
+                let (mut ates, mut ses) = (Vec::new(), Vec::new());
+                let (mut hits, mut truths) = (0usize, Vec::new());
+                for rep in 0..REPS {
+                    let d = dgp.sample(90_000 + rep as u64);
+                    let model = if cross {
+                        PropensityScoreEstimator::cross_fitted_propensity(
+                            &d.treatment,
+                            &d.covariates,
+                            CROSS_FIT_FOLDS,
+                        )
+                    } else {
+                        PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                    };
+                    let Ok(model) = model else { continue };
+
+                    // Recompute ATT's influence contributions here so the
+                    // projection can be switched off, which the public API
+                    // rightly does not allow.
+                    let n = d.treatment.len();
+                    #[allow(clippy::cast_precision_loss)]
+                    let n_f = n as f64;
+                    let (mut sum_y1, mut sum_w0, mut sum_w0y, mut n_t) = (0.0, 0.0, 0.0, 0usize);
+                    for i in 0..n {
+                        let e = model.scores[i].clamp(OVERLAP_LOWER, OVERLAP_UPPER);
+                        if d.treatment[i] > 0.5 {
+                            sum_y1 += d.outcome[i];
+                            n_t += 1;
+                        } else {
+                            let w = e / (1.0 - e);
+                            sum_w0 += w;
+                            sum_w0y += w * d.outcome[i];
+                        }
+                    }
+                    if n_t == 0 || sum_w0 <= 0.0 {
+                        continue;
+                    }
+                    #[allow(clippy::cast_precision_loss)]
+                    let n_t_f = n_t as f64;
+                    let (mu1, mu0) = (sum_y1 / n_t_f, sum_w0y / sum_w0);
+                    let wbar0 = sum_w0 / n_f;
+                    let share_treated = n_t_f / n_f;
+
+                    let psi: Vec<f64> = (0..n)
+                        .map(|i| {
+                            let e = model.scores[i].clamp(OVERLAP_LOWER, OVERLAP_UPPER);
+                            if d.treatment[i] > 0.5 {
+                                (d.outcome[i] - mu1) / share_treated
+                            } else {
+                                -(e / (1.0 - e)) * (d.outcome[i] - mu0) / wbar0
+                            }
+                        })
+                        .collect();
+                    let contrib = if project {
+                        project_off_propensity_score(&psi, &d.treatment, &model)
+                    } else {
+                        psi
+                    };
+                    let var_sum: f64 = contrib.iter().map(|v| v * v).sum();
+                    let se = (var_sum / (n_f * n_f)).max(0.0).sqrt();
+                    let ate = mu1 - mu0;
+                    let crit = match effective_variance_dof(&contrib) {
+                        Some(dof) => cynepic_core::special::t_quantile(0.975, dof),
+                        None => 1.959_963_984_540_054,
+                    };
+                    if (ate - d.truth.att).abs() <= crit * se {
+                        hits += 1;
+                    }
+                    ates.push(ate);
+                    ses.push(se);
+                    truths.push(d.truth.att);
+                }
+
+                #[allow(clippy::cast_precision_loss)]
+                let r_f = ates.len() as f64;
+                let mean_ate = ates.iter().sum::<f64>() / r_f;
+                let sd =
+                    (ates.iter().map(|a| (a - mean_ate).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt();
+                let mean_se = ses.iter().sum::<f64>() / r_f;
+                let cv = (ses.iter().map(|x| (x - mean_se).powi(2)).sum::<f64>() / (r_f - 1.0))
+                    .sqrt()
+                    / mean_se;
+                #[allow(clippy::cast_precision_loss)]
+                let coverage = 100.0 * hits as f64 / r_f;
+                println!(
+                    "  {:<28} {coverage:>9.1}% {:>9.3} {cv:>9.3}",
+                    format!("{name} / {}", if project { "projected" } else { "raw" }),
+                    mean_se / sd,
+                );
+            }
+        }
+    }
+
+    /// ATT, measured the same way `ipw` was.
+    ///
+    /// ATT's bias under strong confounding is **0.05 sd**, so unlike the ATE
+    /// cells its ceiling is essentially 95% and the gap is entirely the
+    /// interval. That makes it the tractable half of what is left in C14.
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_where_does_att_lose_its_coverage() {
+        const REPS: usize = 500;
+        let cells: [(&str, Dgp); 8] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("heterogeneous-effects", Dgp::new().with_heterogeneity(1.5)),
+            ("nonlinear", Dgp::new().with_nonlinearity(2.0)),
+            ("heteroskedastic", Dgp::new().heteroskedastic()),
+            ("small-n", Dgp::new().with_n(120)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+        ];
+
+        println!("\nC14 — ATT variance, {REPS} replications\n");
+        println!(
+            "  {:<24} {:>10} {:>9} {:>9} {:>9} {:>8}",
+            "cell", "coverage", "se/sd", "cv(se)", "bias/sd", "dof"
+        );
+
+        for (name, dgp) in cells {
+            let (mut ates, mut ses, mut dofs, mut truths) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let mut hits = 0usize;
+            for rep in 0..REPS {
+                let d = dgp.sample(90_000 + rep as u64);
+                let Ok(r) = PropensityScoreEstimator::att(&d.treatment, &d.outcome, &d.covariates)
+                else {
+                    continue;
+                };
+                // ATT's estimand is the effect among the treated, which the DGP
+                // reports separately from the ATE. Scoring it against the ATE
+                // would measure the wrong thing under heterogeneity.
+                let truth = d.truth.att;
+                if r.confidence_interval(0.95)
+                    .is_some_and(|(lo, hi)| truth >= lo && truth <= hi)
+                {
+                    hits += 1;
+                }
+                ates.push(r.ate());
+                ses.push(r.std_error());
+                if let Some(v) = r.diagnostics().variance_dof {
+                    dofs.push(v);
+                }
+                truths.push(truth);
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let r_f = ates.len() as f64;
+            let mean_ate = ates.iter().sum::<f64>() / r_f;
+            let sd =
+                (ates.iter().map(|a| (a - mean_ate).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt();
+            let mean_se = ses.iter().sum::<f64>() / r_f;
+            let cv = (ses.iter().map(|x| (x - mean_se).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt()
+                / mean_se;
+            let truth = truths.iter().sum::<f64>() / r_f;
+            dofs.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+            let med_dof = if dofs.is_empty() {
+                f64::NAN
+            } else {
+                dofs[dofs.len() / 2]
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let coverage = 100.0 * hits as f64 / r_f;
+            println!(
+                "  {name:<24} {coverage:>9.1}% {:>9.3} {cv:>9.3} {:>9.3} {med_dof:>8.1}",
+                mean_se / sd,
+                (mean_ate - truth) / sd,
+            );
+        }
+        println!(
+            "\n  se/sd below 1 means the reported uncertainty is smaller than the\n               actual sampling variability, and no dof rule repairs a wrong scale."
+        );
+    }
+
+    /// Adaptive: cross-fit where the events-per-variable rule allows, fall back
+    /// to the in-sample fit where it does not.
+    ///
+    /// The question this settles is whether the guard is good enough to make
+    /// cross-fitting a *default* rather than an opt-in. Adopting it silently
+    /// would change every existing caller's point estimate, so the bar is that
+    /// it must be no worse than the in-sample fit on **every** cell of the
+    /// standard grid, not merely better on the two that motivated it.
+    fn adaptive_ipw(
+        treatment: &Array1<f64>,
+        outcome: &Array1<f64>,
+        covariates: &Array2<f64>,
+    ) -> Result<ATEResult, EstimationError> {
+        match PropensityScoreEstimator::ipw_cross_fitted(treatment, outcome, covariates, 5) {
+            Err(EstimationError::CrossFittingNotApplicable { .. }) => {
+                PropensityScoreEstimator::ipw(treatment, outcome, covariates)
+            }
+            other => other,
+        }
+    }
+
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_is_adaptive_cross_fitting_safe_as_a_default() {
+        const REPS: usize = 400;
+        let cells: [(&str, Dgp); 10] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("weak-overlap", Dgp::new().with_overlap(0.06)),
+            ("nonlinear", Dgp::new().with_nonlinearity(2.0)),
+            ("heteroskedastic", Dgp::new().heteroskedastic()),
+            ("heterogeneous-effects", Dgp::new().with_heterogeneity(1.5)),
+            ("small-n", Dgp::new().with_n(120)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+            ("very-high-dim", Dgp::new().with_p(40).with_n(300)),
+        ];
+
+        println!("\nC14 — adaptive cross-fitting as a default, {REPS} replications\n");
+        println!(
+            "  {:<24} {:>12} {:>12} {:>9} {:>9}",
+            "cell", "in-sample", "adaptive", "delta", "refused"
+        );
+
+        let mut worst_regression: f64 = 0.0;
+        let mut worst_cell = String::new();
+
+        for (name, dgp) in cells {
+            let mut row = [0.0_f64; 2];
+            let mut refusal = [0.0_f64; 2];
+            for (slot, adaptive) in [false, true].into_iter().enumerate() {
+                let (mut hits, mut estimable, mut refused) = (0usize, 0usize, 0usize);
+                for rep in 0..REPS {
+                    let d = dgp.sample(90_000 + rep as u64);
+                    let r = if adaptive {
+                        adaptive_ipw(&d.treatment, &d.outcome, &d.covariates)
+                    } else {
+                        // Explicitly in-sample. `ipw` is adaptive now, so
+                        // calling it here would compare the function with
+                        // itself and report +0.0 everywhere — which is exactly
+                        // what it did until this was noticed.
+                        PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                            .and_then(|m| {
+                                PropensityScoreEstimator::ipw_with_model(
+                                    &d.treatment,
+                                    &d.outcome,
+                                    &m,
+                                )
+                            })
+                    };
+                    match r {
+                        Ok(r) => {
+                            estimable += 1;
+                            if r.confidence_interval(0.95)
+                                .is_some_and(|(lo, hi)| d.truth.ate >= lo && d.truth.ate <= hi)
+                            {
+                                hits += 1;
+                            }
+                        }
+                        Err(_) => refused += 1,
+                    }
+                }
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    row[slot] = if estimable == 0 {
+                        f64::NAN
+                    } else {
+                        100.0 * hits as f64 / estimable as f64
+                    };
+                    refusal[slot] = 100.0 * refused as f64 / REPS as f64;
+                }
+            }
+
+            // A cell already over-covering is not improved by moving further
+            // from nominal, so the comparison is distance from 95, not raw
+            // coverage.
+            let delta = (95.0 - row[0]).abs() - (95.0 - row[1]).abs();
+            if delta < -worst_regression.abs() || (delta < 0.0 && -delta > worst_regression) {
+                worst_regression = -delta;
+                worst_cell = name.to_string();
+            }
+            println!(
+                "  {name:<24} {:>11.1}% {:>11.1}% {delta:>+9.1} {:>8.0}%",
+                row[0], row[1], refusal[1]
+            );
+        }
+        println!(
+            "\n  delta is the improvement in DISTANCE FROM NOMINAL, so a cell that\n               was already over-covering is not credited for moving further away."
+        );
+        println!(
+            "  worst regression: {worst_regression:.1} points ({worst_cell})\n               Adopting this as a default requires that number to be ~0: it changes\n               the point estimate for every existing caller."
+        );
+    }
+
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_does_cross_fitting_repair_the_interval() {
+        const REPS: usize = 400;
+        let cells: [(&str, Dgp); 6] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("small-n", Dgp::new().with_n(120)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+            ("very-high-dim", Dgp::new().with_p(40).with_n(300)),
+        ];
+
+        println!("\nC14 — in-sample vs cross-fitted propensity, {REPS} replications\n");
+        println!(
+            "  {:<22} {:>10} {:>9} {:>9} {:>9}",
+            "cell / fit", "coverage", "se/sd", "cv(se)", "refused"
+        );
+
+        for (name, dgp) in cells {
+            for cross in [false, true] {
+                let (mut ates, mut ses, mut truths) = (Vec::new(), Vec::new(), Vec::new());
+                let mut refused = 0usize;
+                for rep in 0..REPS {
+                    let d = dgp.sample(90_000 + rep as u64);
+                    let r = if cross {
+                        PropensityScoreEstimator::ipw_cross_fitted(
+                            &d.treatment,
+                            &d.outcome,
+                            &d.covariates,
+                            5,
+                        )
+                    } else {
+                        PropensityScoreEstimator::ipw(&d.treatment, &d.outcome, &d.covariates)
+                    };
+                    let Ok(r) = r else {
+                        // Refusals are the crate's headline property, so they
+                        // are counted rather than silently dropped: a coverage
+                        // figure computed over the replications that survived
+                        // is a different number from one over all of them.
+                        refused += 1;
+                        continue;
+                    };
+                    ates.push(r.ate());
+                    ses.push(r.std_error());
+                    truths.push((d.truth.ate, r.confidence_interval(0.95)));
+                }
+                if ates.len() < 10 {
+                    println!("  {name:<22} (too few estimable replications)");
+                    continue;
+                }
+
+                #[allow(clippy::cast_precision_loss)]
+                let r_f = ates.len() as f64;
+                let mean_ate = ates.iter().sum::<f64>() / r_f;
+                let sd =
+                    (ates.iter().map(|a| (a - mean_ate).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt();
+                let mean_se = ses.iter().sum::<f64>() / r_f;
+                let cv = (ses.iter().map(|x| (x - mean_se).powi(2)).sum::<f64>() / (r_f - 1.0))
+                    .sqrt()
+                    / mean_se;
+                let hits = truths
+                    .iter()
+                    .filter(|(t, ci)| ci.is_some_and(|(lo, hi)| *t >= lo && *t <= hi))
+                    .count();
+                #[allow(clippy::cast_precision_loss)]
+                let coverage = 100.0 * hits as f64 / r_f;
+
+                #[allow(clippy::cast_precision_loss)]
+                let refused_pct = 100.0 * refused as f64 / REPS as f64;
+                println!(
+                    "  {:<22} {coverage:>9.1}% {:>9.3} {cv:>9.3} {refused_pct:>8.0}%",
+                    format!("{name} / {}", if cross { "cross" } else { "in-sample" }),
+                    mean_se / sd,
+                );
+            }
+        }
+        println!(
+            "\n  se/sd is the question: 1.000 means the reported uncertainty matches\n               the actual sampling variability. Below 1 the interval is too narrow\n               and no dof rule fixes that, because the scale itself is wrong."
+        );
+    }
+
     #[test]
     #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
     fn c14_compare_degrees_of_freedom_rules() {
@@ -1621,7 +2261,7 @@ mod c14_diagnostics {
         println!("\nC14 — dof rules across the grid, {REPS} replications\n");
         println!(
             "  {:<24} {:>7} {:>7} {:>9} {:>9} {:>9}",
-            "cell", "legacy", "kish", "cov(z)", "cov(legacy)", "cov(kish)"
+            "cell", "legacy", "kish", "cov(z)", "se/sd", "cv(se)"
         );
 
         let mut worst_kish: f64 = 0.0;
@@ -1643,7 +2283,7 @@ mod c14_diagnostics {
                     continue;
                 };
                 let (psi, ..) = influence(&d.treatment, &d.outcome, &model);
-                let (residual, _k) = project_off_propensity_score(&psi, &d.treatment, &model);
+                let residual = project_off_propensity_score(&psi, &d.treatment, &model);
                 ates.push(r.ate());
                 ses.push(r.std_error());
                 d_sat.push(legacy_satterthwaite_dof(&residual));
@@ -1670,14 +2310,25 @@ mod c14_diagnostics {
                 coverage(&ates, &ses, &d_sat, truth, "t"),
                 coverage(&ates, &ses, &d_kish, truth, "t"),
             );
+            #[allow(clippy::cast_precision_loss)]
+            let r_f = ates.len() as f64;
+            let mean_ate = ates.iter().sum::<f64>() / r_f;
+            let sd =
+                (ates.iter().map(|a| (a - mean_ate).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt();
+            let mean_se = ses.iter().sum::<f64>() / r_f;
+            let cv_se = (ses.iter().map(|x| (x - mean_se).powi(2)).sum::<f64>() / (r_f - 1.0))
+                .sqrt()
+                / mean_se;
             if (95.0 - ck).abs() > worst_kish {
                 worst_kish = (95.0 - ck).abs();
                 worst_name = name.to_string();
             }
             println!(
-                "  {name:<24} {:>7.1} {:>7.1} {cz:>8.1}% {cs:>8.1}% {ck:>8.1}%",
+                "  {name:<24} {:>7.1} {:>7.1} {cz:>8.1}% {:>8.3} {cv_se:>8.3}   \
+                 cov(kish) {ck:.1}%  cov(legacy) {cs:.1}%",
                 med(&d_sat),
                 med(&d_kish),
+                mean_se / sd,
             );
         }
         println!(

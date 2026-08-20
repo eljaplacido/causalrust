@@ -28,7 +28,7 @@ cd "$(dirname "$0")/.."
 
 # Open specs at the last ratchet. Lower with each fix; never raise without a
 # corresponding docs/FINDINGS.md entry in the same commit.
-BASELINE=5
+BASELINE=4
 
 # Suites carrying findings specs: "<crate>:<test target>".
 SUITES=(
