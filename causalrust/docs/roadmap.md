@@ -456,9 +456,37 @@ Still outstanding:
       reducer model and interrupt support through every step, so part of the
       gap is machinery rather than waste. A dispatch win is not a claim that
       one replaces the other.
-- [ ] OPA (policy) — not measured; the binary is not installed here. Still
-      marked assumed, and see the audit below for why the number would not mean
-      what it appears to.
+- [x] **OPA (policy) — measured, and it decomposes.** The suspicion recorded
+      below turned out to be right, and larger than expected. Same policy, same
+      input, one machine, opa 1.19.1:
+
+      | measurement | p50 |
+      |---|---|
+      | OPA sidecar, round trip | 320.1µs |
+      | OPA's own `timer_rego_query_eval_ns` | 17.6µs |
+      | └ transport + serialisation | **302.4µs (94.5%)** |
+      | `cynepic-guardian`, in-process | 5.6µs |
+
+      Two ratios, and they are different claims:
+
+      | claim | ratio |
+      |---|---|
+      | **deployment** — sidecar → in-process | **57x** |
+      | **engine** — OPA's evaluator → regorus | **3.1x** |
+
+      The README claims ~100x. 57x is the right order of magnitude — the only
+      assumption in that table that was — but **94.5% of it is deleting an HTTP
+      hop**, not regorus outperforming OPA. Removing a sidecar is a real and
+      useful win. It is not a claim about this code.
+
+      3.1x is the engine figure, and it is a lower bound in our favour: our
+      5.6µs includes an `Engine::clone()` per call (so concurrent callers cannot
+      observe each other's `set_input` — a correctness requirement), while OPA's
+      timer excludes its own request handling. Quoting ~100x for the engine
+      would overstate a 3.1x result by more than thirty times.
+
+      `scripts/compare_opa.py` asks OPA for the split rather than inferring it,
+      and is committed alongside the other two harnesses.
 - [ ] PyMC (sampler) — not a fair comparison at all. See the audit below.
 - [x] Publish the cells where we are slower. The first one found is above, and
       publishing it is what led to the fix.
@@ -494,12 +522,13 @@ also measures the least interesting property of a guardrail. Whether the breaker
 *opens when it should* is the question, and `tests/guardrails.rs` answers it —
 including the half-open state that finding G1 showed did not exist.
 
-**Policy evaluation vs OPA sidecar — well-posed, but it will not be measuring
-what it appears to.** ~100x is plausible, and almost all of it is deleting a
-network round trip, not regorus outperforming OPA's evaluator. Against OPA *as
-a library* the gap would be far smaller. If measured, both configurations must
-be reported, or the row credits the policy engine for a win that belongs to the
-deployment topology.
+**Policy evaluation vs OPA sidecar — well-posed, but it was not measuring what
+it appeared to.** This was written as a prediction before the measurement, and
+it is recorded unchanged because it was right: ~100x is plausible, and almost
+all of it is deleting a network round trip rather than regorus outperforming
+OPA's evaluator. Measured, transport is **94.5%** of the round trip and the
+engine ratio is **3.1x**, not ~100x. Both configurations are now reported
+above, which is what the row needed.
 
 **StateGraph step vs LangGraph — well-posed.** Same task, same graph shape, both
 sides doing dispatch. This is the one of the four worth measuring as written,

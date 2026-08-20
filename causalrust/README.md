@@ -107,31 +107,33 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 
 ---
 
-## Performance — three rows measured, and all three moved
+## Performance — every measurable row measured
 
 | Operation | Python equivalent | cynepic-rs | Speedup | Status |
 |-----------|------------------|------------|---------|--------|
 | DAG d-separation | NetworkX | petgraph | **9–19x** | **measured** |
 | Beta 95% credible interval | scipy (Boost) | `bisect_cdf` | **2.9x** | **measured** |
 | StateGraph step | LangGraph | typed dispatch | **100–191x** | **measured** |
-| Policy evaluation | OPA sidecar | in-process regorus | ~100x | assumed, and see below |
+| Policy evaluation vs sidecar | OPA over HTTP | in-process regorus | **57x** | **measured** |
+| Policy evaluation vs engine | OPA's Go evaluator | regorus | **3.1x** | **measured** |
 | Beta conjugate prior update | PyMC | direct | — | not a fair comparison |
 | Circuit breaker check | Python | atomics | — | not a fair comparison |
 
-The one row still marked **assumed** is what we expect from moving this work
-out of Python; no benchmark here produces it, and it should not be quoted. It is
-plausible, but it would mostly be measuring the deletion of a network hop rather
-than the policy engine, so it needs both configurations reported or not
-reporting at all.
+The policy row was one number doing two jobs, so it is now two rows. OPA's API
+reports its own `timer_rego_query_eval_ns`, which shows that **94.5% of the
+sidecar round trip is HTTP, JSON and the loopback hop** — not policy evaluation.
+Deleting a sidecar is worth 57x and is a real, useful win; it is not a claim
+about regorus, which is worth 3.1x. The original ~100x conflated them.
 
 The two rows marked **not a fair comparison** are worse than unmeasured. PyMC
 has no conjugate-update primitive to compare against, and a conjugate update is
 two additions; a circuit-breaker check is an atomic load against a Python
 attribute access, and whether the breaker *opens when it should* is the question
-that matters. Both are proposed for retirement in the roadmap rather than
-quietly measured into something impressive.
+that matters — `cynepic-guardian`'s guardrail tests answer it. They are kept
+here, marked, rather than deleted: erasing them would erase the fact that they
+were ever claimed, and that is the part a reader needs.
 
-All three measured rows are worth reading for what measuring did to them.
+Every measured row is worth reading for what measuring did to it.
 D-separation came back **50x below its assumption** — 9–19x, not ~1,000x — and
 the ratio *falls* as the graph grows, so most of the win is Python call overhead
 rather than the algorithm. StateGraph came back **~15x above** its assumption,
@@ -139,14 +141,20 @@ in the opposite direction. The credible interval came back **1.2x slower than
 scipy**, which is how a 200-iteration bisection loop that needed 60 got found;
 it is 2.9x faster now, and the values are bit-identical either way.
 
-None of those assumptions was dishonest. All were plausible, and being wrong in
-both directions is the tell: they were not conservative or optimistic, they were
-simply uncorrelated with the facts, which is what a number that has never met an
-instrument looks like in aggregate.
+Policy evaluation was the one assumption that landed in the right order of
+magnitude — and it did so for almost entirely the wrong reason.
 
-Reproduce them with `scripts/compare_networkx.py`, `scripts/compare_langgraph.py`,
-and the `latency_report` example in `cynepic-causal`, `cynepic-bayes` and
-`cynepic-graph` — all on one machine — and see
+None of these assumptions was dishonest. All were plausible, and being wrong in
+both directions is the tell: they were not conservative or optimistic, they were
+simply uncorrelated with the facts, which is what numbers that have never met an
+instrument look like in aggregate. The two rows still marked "not a fair
+comparison" are kept for the same reason they are marked — so a reader who has
+met the claim elsewhere finds out here that it does not hold up.
+
+Reproduce them with `scripts/compare_networkx.py`, `compare_langgraph.py`,
+`compare_opa.py`, and the `latency_report` example in `cynepic-causal`,
+`cynepic-bayes`, `cynepic-graph` and `cynepic-guardian` — all on one machine —
+and see
 [docs/roadmap.md](docs/roadmap.md#benchmarking-what-still-has-to-be-proven) for
 what each remaining row would take to prove.
 
