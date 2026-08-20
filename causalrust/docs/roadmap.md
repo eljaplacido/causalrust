@@ -190,7 +190,7 @@ easy to measure:
 | 1 | **Agreement** — same answer as a reference implementation on the same data | Golden-file parity against numpy/scipy/networkx | **Built**, 258 cases |
 | 2 | **Coverage** — intervals deliver the confidence they claim | `cynepic-testkit` harness | **Built**, published per run |
 | 3 | **Refusal** — declines when the data cannot support an answer | Adversarial corpus, false-answer rate | **Built**, 0 false answers |
-| 4 | **Reproducibility** — same seed, same answer, every platform | Cross-platform determinism tests | **Partly built** |
+| 4 | **Reproducibility** — same seed, same answer, every platform | Determinism suites + CI's 3-OS matrix | **Built**, 15 checks |
 | 5 | **Tail latency** — p99, not mean | criterion distributions | **Not built** |
 | 6 | **Footprint** — allocations and peak memory | counting allocator | **Not built** |
 | 7 | **Throughput** — the table's claim | criterion vs a Python harness | **Not built** |
@@ -251,6 +251,66 @@ The property no Python equivalent has, and the one most worth advertising.
 
 - [ ] Extend to a DoWhy/statsmodels comparison once those are pinned in the
       fixture generator
+
+### 4. Reproducibility
+
+"Reproducible" is usually said as though it were one property. It is two, and
+quoting the strong one when only the weak one holds is how the claim goes bad.
+
+**Replay** — same seed, same binary — must be *bit-identical*. Anything weaker
+and a stored seed cannot reconstruct a reported figure, which is the whole point
+of storing it.
+
+**Portability** — same seed, different platform — is bit-identical only for the
+operations IEEE-754 requires to be correctly rounded (`+ - * /`, `sqrt`). It is
+not, and cannot be, for `exp`, `ln`, `lgamma` or `erf`: those are libm, and
+glibc, macOS and MSVC each round them differently in the last ulp.
+
+So the claims are split along the line the standard draws:
+
+| Path | Uses | Claim |
+|---|---|---|
+| `difference_in_means`, `ols_adjusted` | `+ - * / sqrt` only | **bit-identical on every platform** |
+| `ipw` (IRLS, so `exp`/`ln`) | libm | agreement to 1e-9, deviation reported |
+| MCMC chains | libm on every proposal | summary within Monte Carlo error |
+
+- [x] `cynepic-causal/tests/determinism.rs` — committed bit patterns for the
+      arithmetic-only estimators, checked on ubuntu / macos / windows by the
+      existing CI matrix. Inputs are integers over 4, so they are exactly
+      representable and identical everywhere *by construction*; generating them
+      with a seeded RNG would have been shorter and would have destroyed the
+      point, because `rand`'s normal ziggurat calls `ln` in its tail.
+- [x] `cynepic-bayes/tests/determinism.rs` — chain replay for all three
+      samplers, including the adaptive one, where a single differing draw
+      changes the proposal scale and so every draw after it.
+- [x] **Interleaving tests.** Two seeded streams consumed *alternately*, not one
+      after the other. A thread-local generator reproduces perfectly when a
+      chain runs alone and leaks the moment a caller fits two models in one
+      process — which no single-chain test can see.
+- [x] **Controls.** An unseeded chain must differ from another unseeded chain,
+      and two seeds must produce different data. Without these, a sampler that
+      ignored its seed entirely would score perfectly on every replay test.
+
+#### The check the suite could not make, found by mutation
+
+Every test above compared two runs *inside one process*. Perturbing the stored
+seed by the process id — the exact defect that makes "reproduce it from the
+recorded seed" false — left the entire suite green.
+
+`a_seed_replays_across_processes_not_only_within_one` closes it by re-executing
+the test binary and comparing chain digests. It fails under that mutation; the
+other seven do not.
+
+The lesson generalises past this file: **a determinism test that never crosses a
+process boundary is testing that a function is a function.** It is worth
+recording because the suite looked complete before the mutation was tried.
+
+- [ ] Extend cross-process replay to the causal estimators (they are pure
+      functions of their inputs, so the gap is smaller, but "smaller" is not
+      "measured")
+- [ ] A recorded-seed corpus: fix seeds now, assert the same answers after
+      dependency bumps. This is the check that catches a `rand` or `statrs`
+      upgrade silently changing a published number.
 
 ### 5. Tail latency, not throughput
 
