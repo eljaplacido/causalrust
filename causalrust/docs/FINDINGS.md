@@ -2,10 +2,12 @@
 
 > **Status: twelve findings closed, two open, across three measured crates.**
 >
-> - `cynepic-causal` — `ols_adjusted` is nominal on all nine grid cells; IPW is
->   nominal on eight of eight estimable cells within five points, and
->   **under-covers by ~5 points under strong confounding** ([C14](#c14), open
->   and narrowed from ~8).
+> - `cynepic-causal` — `ols_adjusted` is nominal on all nine grid cells; IPW
+>   under-covers by ~3 points where the weights are heavy ([C14](#c14), open).
+>   The gap narrowed 87.3% → 90.3% → 91.8% across two rounds, and the third
+>   round found why no interval can close it: at strong confounding **100% of
+>   the intervals that miss are the ones reporting a below-median standard
+>   error**. Under heavy weights a narrow interval is the case to distrust.
 > - `cynepic-bayes` — every conjugate interval is calibrated and both samplers
 >   pass simulation-based calibration ([B1](#b1), closed).
 > - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
@@ -68,7 +70,7 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C11](#c11) | `dag` | `CausalDag` did not enforce acyclicity | Critical | **Closed** |
 | [C12](#c12) | `dsep` | Unknown variables reported as d-separated | Critical | **Closed** |
 | [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
-| [C14](#c14) | `estimate::propensity` | IPW under-covers where weights are heavy | High | **OPEN** (narrowed) |
+| [C14](#c14) | `estimate::propensity` | Under heavy weights a *small* SE marks the intervals that miss | High | **OPEN** (mechanism identified) |
 | [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
 | [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** |
 | [G1](#g1) | `guardian::circuit_breaker` | No half-open state; whole load restored on a timer | **Critical** | **Closed** |
@@ -256,106 +258,168 @@ Specs: `b1_shipped_interval_matches_the_exact_reference`,
 
 ---
 
-## <a id="c14"></a>C14 — IPW under-covers where the weights are heavy · **OPEN, narrowed**
+## <a id="c14"></a>C14 — a small standard error is a danger signal, not a precise one · **OPEN, mechanism identified**
 
-Coverage at strong confounding: **87.3% → 90.3%** after a partial fix. Still
-below nominal, so still open, but the mechanism is now identified and four
-hypotheses have been ruled out by measurement rather than argument.
+Coverage under heavy weights: **87.3% → 90.3% → 91.8%** across two rounds of
+partial fixes. Still below nominal, and the third round established *why no
+interval can close it*, which is a different claim from the one this finding
+started with.
 
-### What it is not
+### The result that reframes it
 
-The original entry named two plausible mechanisms. **Both were wrong**, and so
-was the candidate fix. Measured at 400 replications, `n = 2000`:
+Over 800 replications, of the replications whose interval **failed to cover**:
 
-| diagnostic | benign | strong-confounding |
+| cell | corr(\|error\|, se) | share of misses from a **below-median** SE |
 |---|---|---|
-| coverage, reported SE | 95.8% | **87.2%** |
-| coverage, **oracle** SE (the true Monte Carlo sd) | 96.0% | **96.0%** |
-| coverage, constant mean SE | 95.5% | 93.8% |
-| mean reported SE / true sd | 0.973 | 0.946 |
-| skewness / kurtosis of the estimate | −0.13 / 2.63 | −0.47 / 2.83 |
-| **coefficient of variation of the reported SE** | **0.05** | **0.26** |
+| benign | 0.067 | 40.0% |
+| moderate-overlap | 0.076 | **98.5%** |
+| strong-confounding | −0.036 | **100.0%** |
+| high-dim | 0.509 | 82.0% |
 
-Ruled out:
+Under independence that last column is 50%. At strong confounding it is
+**100%**: every single failure to cover happened in a replication that reported
+*below-median* uncertainty.
 
-- **Interval shape.** Oracle-SE coverage is 96.0%. A symmetric normal interval
-  is fine here; skewness is mild and kurtosis is under 3.
-- **Bias.** +0.033 against a sd of 0.152, and the oracle column carries that
-  bias while still covering at 96%.
-- **SE magnitude.** The mean reported SE is 5.4% low. That alone moves coverage
-  by about two points, not eight.
-- **In-sample overfit of the projection.** With `k = 4` and `n = 2000` this
-  removes about 0.2% of the variance. Three orders of magnitude too small.
+The interval is narrowest exactly when it most needs to be wide. A t-interval
+assumes the error and the standard error are independent, and here they are
+anti-informative. **No degrees-of-freedom rule can repair that**, because a dof
+rule scales every interval by the same factor — reaching the bad replications
+means grossly over-covering all the others. That is visible directly: a fixed
+`dof = 4` brings the heavy cells to 96.0% and takes `benign` to 99.8%.
 
-### What it is
+The mechanism is that the heavy-weight units carry the correction that removes
+confounding bias. A sample that happens not to contain them produces both a
+small variance estimate *and* an estimate that is systematically off. It is
+confidently wrong, and it is confident *because* it is wrong.
 
-**The standard error is not biased, it is noisy.** A coefficient of variation of
-0.26 implies the variance estimate carries roughly `1/(2·cv²) ≈ 7.5` effective
-degrees of freedom despite `n = 2000`, because with heavy weights a handful of
-influence contributions dominate the sum of squares.
+**The operational consequence, which is the useful part:** under heavy weights,
+a small reported standard error is not evidence of precision. Read
+`Diagnostics::effective_n` and `Diagnostics::variance_dof` first. A dof in the
+single digits on `n = 2000` means the interval rests on a handful of
+observations, and a *narrow* interval in that regime is the case to distrust
+most.
 
-A noisy variance estimate is exactly what Student's t exists for. The
-decomposition:
+### Two fixes that did land, and what they were worth
 
-```
-coverage with the noisy reported SE      87.2%
-coverage with its mean held constant     93.8%   <- 6.6 points from NOISE
-coverage with the oracle SE              96.0%   <- 2.2 more from magnitude
-```
+Measured across the DGP grid, 500 replications, coverage at 95% nominal:
 
-### The partial fix
-
-`Diagnostics::variance_dof` now carries a Satterthwaite estimate of the
-variance's effective degrees of freedom, and `confidence_interval` uses a
-Student-t quantile when it is present. Coverage at strong confounding rises to
-**90.3%**, and every cell of the grid is now within five points of nominal.
-
-The gap that remains is that Satterthwaite recovers only **23** of the 7.5
-degrees of freedom the observed noise implies. It is computed from the influence
-contributions alone, so it sees the heavy-tail source of noise and not the
-second source: the propensity model was itself estimated from the same data.
-
-### The candidate fix, measured and rejected
-
-The obvious remedy for the second source is a bootstrap that refits the
-propensity model inside every replicate. `PropensityScoreEstimator::ipw_bootstrap`
-does exactly that, and **it makes coverage worse**:
-
-| cell | analytic (t) | bootstrap |
+| cell | before | after |
 |---|---|---|
-| benign | 94.5%, w=0.195 | 96.5%, w=0.198 |
-| moderate-overlap | 93.0%, w=0.623 | 93.0%, w=0.557 |
-| strong-confounding | **92.5%**, w=0.654 | **89.5%**, w=0.581 |
+| benign | 95.6% | 95.6% |
+| moderate-overlap | 90.4% | **91.2%** |
+| strong-confounding | 91.2% | **91.8%** |
+| nonlinear | 96.4% | 96.4% |
+| heteroskedastic | 96.2% | 96.6% |
+| heterogeneous-effects | 95.6% | 95.6% |
+| small-n | 95.4% | 96.2% |
+| **high-dim** | 90.4% | **91.8%** |
 
-The bootstrap interval is *narrower* precisely where the analytic one was
-already too narrow. This is a known limitation rather than a defect: a
-nonparametric bootstrap resamples the units it was given, so it cannot reproduce
-a tail event that did not occur in the original sample — and with heavy weights,
-the variance lives in those tails.
+**1. The projection was not paying for its coefficients.** `residual_psi` is the
+residual from a `k`-coefficient least-squares fit, so `sum(residual^2)` is a
+*residual* sum of squares and is biased low by `(n - k)/n` — the same reason an
+OLS variance divides by `n - k`. The variance divided by `n^2` and made no such
+correction. At `n = 2000` with a few covariates that is a quarter of a percent
+and invisible, which is why it survived; at **high-dim** (`p = 25`, so `k = 26`,
+on `n = 400`) it is **6.5% of the variance**. That cell covers at 89.2% with a
+bias of **0.02 sd** — nothing was wrong with the point estimate, the interval
+was simply too narrow. `high-dim` was not previously recorded as affected.
 
-`ipw_bootstrap` is kept as a capability, documented with this result so it is not
-mistaken for the remedy.
+**2. Satterthwaite carried a Gaussian assumption into a correction that exists
+because Gaussianity failed.** `nu = 2 (sum psi^2)^2 / (sum psi^4 - ...)`. The
+factor of two is `Var(chi^2_nu) = 2 nu`, which holds for squares of Gaussians.
+Under heavy tails `psi^2` has a coefficient of variation above the Gaussian
+value, so the true dof is *below* `2 x Kish`. Dropping the factor gives Kish's
+effective sample size — the same quantity already reported as `effective_n`,
+applied to the influence contributions instead of the weights.
+
+The new rule's dof now matches the dof the observed noise implies, which is the
+check that it is right rather than merely helpful:
+
+| cell | dof implied by observed cv(se) | Satterthwaite | Kish |
+|---|---|---|---|
+| moderate-overlap | 6.8 | 16.5 | **8.2** |
+| strong-confounding | 7.8 | 14.2 | **7.1** |
+
+And it is invisible where it should be: at `benign` it takes the dof from 803 to
+334, and `t(0.975, 334)` is 1.967 against 1.963.
+
+### Three hypotheses refuted by measurement
+
+**"The propensity model is estimated from the same data, and that is the second
+noise source."** This was the finding's own stated explanation for the residual
+gap. It is wrong. Substituting the DGP's *true* propensity isolates the sources,
+and the noise does not move:
+
+| cell / propensity | cv(se) |
+|---|---|
+| moderate-overlap / **true** | 0.276 |
+| moderate-overlap / fitted | 0.272 |
+| strong-confounding / **true** | 0.255 |
+| strong-confounding / fitted | 0.253 |
+
+Propensity estimation contributes essentially nothing to the noise in the
+standard error. It is heavy tails, entirely. (It contributes a great deal to the
+*efficiency*: the true-propensity estimator has sd 0.237 against 0.148 for the
+fitted one, which is the textbook result and a good check that the substitution
+worked.)
+
+**"The sample fourth moment is biased down, so compute it from the model."**
+`S4`'s median is 1.39e-1 against a mean of 1.66e-1 at strong confounding, so the
+downward bias is real and it does inflate `nu`. Replacing it with an expectation
+over `T_i ~ Bernoulli(e_i)` — using every unit in both arms, so the `1/e` tail
+is fully represented — made it **worse**: `nu` went from 14.5 to 30.6 and
+coverage fell. The reason is an assumption hidden in the substitution: it treats
+the outcome residual's moments as independent of the propensity, and under
+confounding they are not independent — *that is what confounding means*. Units
+with extreme `e` also have extreme outcomes, so the true fourth moment far
+exceeds the product of the marginals. The code is kept, unused and documented,
+so the next person does not have the idea twice.
+
+**"It is the overlap clamp."** Clamping to `[0.02, 0.98]` binds on **0.69%** of
+units at moderate-overlap and **1.00%** at strong confounding, and **0.00%** at
+high-dim — which covers at 91.8% regardless. Not the mechanism.
+
+### The ceiling, and why the bar stays where it is
+
+Residual bias caps achievable coverage independently of the interval:
+
+| cell | bias / sd | coverage ceiling |
+|---|---|---|
+| moderate-overlap | 0.19 | ~94.6% |
+| strong-confounding | 0.27 | ~94.1% |
+| high-dim | 0.02 | ~95.0% |
+
+`P(|Z + 0.27| < 1.96)` is 94.1%, not 95%. So two of the three cells cannot reach
+nominal by any interval construction, and `high-dim` — which can — is the cell
+where the remaining work is well defined.
+
+The specs stay at a **3-point** bar. Monte Carlo standard error at 300
+replications is about 1.2 points, so 3 points is a real requirement. Coverage is
+now 91.2–91.8%, so they still fail, by 1.2 to 1.8 points.
 
 ### What is left
 
-Recovering the remaining degrees of freedom requires accounting for the
-propensity model's estimation error in the *variance of the variance*, not just
-in the variance. Candidates not yet tried: a cross-fitted (sample-split)
-projection, or an analytic second-order expansion of the sandwich.
-
-The specs are now held to a **3-point** bar rather than 5. Monte Carlo standard
-error at 300 replications is about 1.2 points, so 3 is a real requirement, and 5
-would now be satisfied by the partial fix.
+- **`high-dim` is the tractable one.** Zero bias, 91.8% coverage, `k/n = 6.5%`.
+  A cross-fitted (sample-split) projection would remove the remaining in-sample
+  dependence that `(n - k)` only approximates.
+- **The heavy cells need a different estimator, not a different interval.**
+  Augmented IPW / doubly-robust estimation attacks the bias, which is the
+  binding constraint there. That is new capability, not a fix to this one.
+- **Surface the anti-informative property.** `variance_dof` in the single digits
+  is the signal, and it is currently a field a caller has to know to read.
 
 **Until it closes**, prefer `ols_adjusted` when the outcome model is plausibly
-linear — it is nominal on every cell — and read `Diagnostics::variance_dof`
-before trusting an IPW interval. A value in the tens rather than the hundreds is
-the signal that the interval is resting on very few effective observations.
+linear — it is nominal on every cell — and treat a narrow IPW interval under
+heavy weights as the case to distrust, not the case to trust.
 
 Specs: `c14_ipw_coverage_is_nominal_under_strong_confounding`,
 `c14_att_coverage_is_nominal_under_strong_confounding`. Guards:
 `few_variance_degrees_of_freedom_widen_the_interval`,
-`ipw_bootstrap_agrees_on_the_point_estimate_and_labels_itself`.
+`ipw_bootstrap_agrees_on_the_point_estimate_and_labels_itself`,
+`projection_correction_scales_with_the_coefficients_spent`,
+`effective_dof_is_the_kish_effective_count`,
+`the_rule_never_claims_more_than_satterthwaite_did`. Diagnostics:
+`cargo test -p cynepic-causal --lib c14 -- --ignored --nocapture --test-threads=1`.
 
 ---
 

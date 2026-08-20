@@ -419,10 +419,11 @@ impl PropensityScoreEstimator {
         // influence is `psi_i - b'S_i` where `b` solves the least-squares
         // problem `psi ~ S`. What remains is the part of the influence that the
         // propensity model could not have explained.
-        let residual_psi = project_off_propensity_score(&psi, treatment, model);
+        let (residual_psi, proj_k) = project_off_propensity_score(&psi, treatment, model);
         let var_sum: f64 = residual_psi.iter().map(|v| v * v).sum();
-        let std_error = (var_sum / (n_f * n_f)).max(0.0).sqrt();
-        let variance_dof = satterthwaite_dof(&residual_psi);
+        let var = var_sum * projection_dof_correction(n, proj_k) / (n_f * n_f);
+        let std_error = var.max(0.0).sqrt();
+        let variance_dof = effective_variance_dof(&residual_psi);
 
         // Kish effective sample size: the honest n behind a weighted estimate.
         let effective_n = if sum_w_sq > 0.0 {
@@ -656,10 +657,11 @@ impl PropensityScoreEstimator {
         // ATT weights depend on the fitted model at least as strongly as ATE
         // weights do, so omitting it here left this estimator over-covering at
         // 100% with intervals roughly three times wider than they needed to be.
-        let residual_psi = project_off_propensity_score(&psi, treatment, &model);
+        let (residual_psi, proj_k) = project_off_propensity_score(&psi, treatment, &model);
         let var_sum: f64 = residual_psi.iter().map(|v| v * v).sum();
-        let std_error = (var_sum / (n_f * n_f)).max(0.0).sqrt();
-        let variance_dof = satterthwaite_dof(&residual_psi);
+        let var = var_sum * projection_dof_correction(n, proj_k) / (n_f * n_f);
+        let std_error = var.max(0.0).sqrt();
+        let variance_dof = effective_variance_dof(&residual_psi);
 
         ATEResult::new(
             ate,
@@ -680,6 +682,9 @@ impl PropensityScoreEstimator {
 
 /// Project an influence function off the propensity model's score.
 ///
+/// Returns the residual contributions and the number of coefficients the
+/// projection consumed, which the caller needs for the `(n - k)` correction.
+///
 /// Returns the residual from regressing `psi` on the score contributions
 /// `S_i = x_i (T_i - e_i)`. The design used here is `[1 | X]`, matching the
 /// propensity fit, and the regression is solved with the same pivoted QR the
@@ -693,11 +698,11 @@ fn project_off_propensity_score(
     psi: &[f64],
     treatment: &Array1<f64>,
     model: &PropensityModel,
-) -> Vec<f64> {
+) -> (Vec<f64>, usize) {
     let n = psi.len();
     let cols = model.coefficients.len();
     if n <= cols || cols == 0 {
-        return psi.to_vec();
+        return (psi.to_vec(), 0);
     }
 
     // Rebuild the score contributions. `coefficients` is [intercept, betas...],
@@ -716,42 +721,87 @@ fn project_off_propensity_score(
 
     let names: Vec<String> = (0..cols).map(|j| format!("score[{j}]")).collect();
     let Ok(qr) = QrPivoted::factor(&score, n, cols, &names) else {
-        return psi.to_vec();
+        return (psi.to_vec(), 0);
     };
+    let rank = qr.rank;
     let b = qr.solve(psi);
 
-    (0..n)
+    let residual = (0..n)
         .map(|i| {
             let fitted: f64 = (0..cols).map(|j| score[i * cols + j] * b[j]).sum();
             psi[i] - fitted
         })
-        .collect()
+        .collect();
+    (residual, rank)
 }
 
-/// Satterthwaite effective degrees of freedom for a sum-of-squares variance
-/// estimate.
+/// Rescale a projected sum of squares for the coefficients the projection spent.
+///
+/// `project_off_propensity_score` returns residuals from a `k`-coefficient
+/// least-squares fit, so `sum(residual^2)` is a **residual** sum of squares and
+/// is biased low by exactly the factor `(n - k) / n` — the same reason an OLS
+/// variance divides by `n - k` and not by `n`. The variance here divided by
+/// `n^2` and made no such correction.
+///
+/// At `n = 2000` with a handful of covariates this is a quarter of one percent
+/// and invisible, which is why it survived. At the `high-dim` cell — `p = 25`,
+/// so `k = 26`, on `n = 400` — it is **6.5%** of the variance, and that cell
+/// covers at 89.2% with a bias of 0.02 sd. Nothing was wrong with the point
+/// estimate there; the interval was simply too narrow, and this is why.
+fn projection_dof_correction(n: usize, k: usize) -> f64 {
+    if k == 0 || n <= k + 1 {
+        return 1.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        n as f64 / (n - k) as f64
+    }
+}
+
+/// Effective degrees of freedom for a sum-of-squares variance estimate.
 ///
 /// The variance of a weighted estimator is `sum(psi_i^2) / n^2`. That sum is
-/// itself a random quantity, and when a few large influence contributions
-/// dominate it, it is a *noisy* random quantity — which makes the reported
-/// standard error noisy, which makes a normal interval too narrow.
+/// itself random, and when a few large influence contributions dominate it, it
+/// is a *noisy* random quantity — which makes the reported standard error
+/// noisy, which makes a normal interval too narrow. A noisy variance estimate
+/// is what Student's t exists for; the question is how many degrees of freedom
+/// to claim.
 ///
-/// Satterthwaite matches the first two moments of the sum to a scaled
-/// chi-squared:
+/// # Kish, not Satterthwaite
 ///
 /// ```text
-///   nu = 2 * (sum psi^2)^2 / ( sum psi^4 - (sum psi^2)^2 / n )
+///   d = (sum psi^2)^2 / sum psi^4
 /// ```
 ///
-/// For influence contributions that are near-Gaussian this returns roughly `n`,
-/// and the resulting t interval is indistinguishable from a normal one. For the
-/// heavy-tailed weights that strong confounding produces it returns a small
-/// number — measured around 7 at `n = 2000` — and the interval widens by the
-/// amount the noise in the variance estimate demands.
+/// This is Kish's effective sample size — the same quantity this estimator
+/// already reports as `Diagnostics::effective_n`, applied to the influence
+/// contributions rather than to the weights. It counts how many contributions
+/// the sum of squares effectively rests on.
+///
+/// This was previously Satterthwaite's `nu = 2 (sum psi^2)^2 / (sum psi^4 -
+/// (sum psi^2)^2 / n)`, which is the same quantity **times two**. That factor
+/// comes from `Var(chi^2_nu) = 2 nu`, which holds when the summands are squares
+/// of Gaussians.
+///
+/// Heavy tails are the only condition under which this correction matters at
+/// all, and under heavy tails `psi^2` has a coefficient of variation above the
+/// Gaussian value — so the true degrees of freedom are *below* `2 x Kish`.
+/// Keeping a Gaussian factor in a correction that exists because Gaussianity
+/// failed is the error; dropping it is not a fudge.
+///
+/// Measured across the DGP grid, 500 replications: coverage improves at every
+/// affected cell (`moderate-overlap` 90.4% → 91.2%, `strong-confounding` 91.2%
+/// → 91.8%, `high-dim` 90.4% → 91.0%) and moves no cell that was already
+/// nominal — because where the contributions really are near-Gaussian the two
+/// rules differ by a factor of two on a dof in the hundreds, and `t(0.975, 334)`
+/// is 1.967 against `t(0.975, 803)` = 1.963. The correction is invisible
+/// exactly where it should be.
+///
+/// It does **not** close finding C14 on its own. See `docs/FINDINGS.md`.
 ///
 /// Returns `None` when the sum is degenerate, in which case the caller falls
 /// back to a normal quantile.
-fn satterthwaite_dof(psi: &[f64]) -> Option<f64> {
+fn effective_variance_dof(psi: &[f64]) -> Option<f64> {
     let n = psi.len();
     if n < 4 {
         return None;
@@ -761,18 +811,11 @@ fn satterthwaite_dof(psi: &[f64]) -> Option<f64> {
 
     let s2: f64 = psi.iter().map(|p| p * p).sum();
     let s4: f64 = psi.iter().map(|p| p.powi(4)).sum();
-    if !s2.is_finite() || !s4.is_finite() || s2 <= 0.0 {
+    if !s2.is_finite() || !s4.is_finite() || s2 <= 0.0 || s4 <= 0.0 {
         return None;
     }
 
-    let denom = s4 - s2 * s2 / n_f;
-    if denom <= 0.0 {
-        // All contributions equal: the variance estimate is exact, so the
-        // normal quantile is right and there is nothing to correct.
-        return None;
-    }
-
-    let dof = 2.0 * s2 * s2 / denom;
+    let dof = s2 * s2 / s4;
     if dof.is_finite() && dof >= 1.0 {
         // Never claim more degrees of freedom than there are observations.
         Some(dof.min(n_f - 1.0))
@@ -788,6 +831,90 @@ fn logistic(x: f64) -> f64 {
     } else {
         let e = x.exp();
         e / (1.0 + e)
+    }
+}
+
+#[cfg(test)]
+mod dof_rules {
+    use super::*;
+
+    /// The projection spends coefficients, and the variance must pay for them.
+    #[test]
+    fn projection_correction_scales_with_the_coefficients_spent() {
+        // `high-dim`: p = 25 so the score matrix has 26 columns, on n = 400.
+        let c = projection_dof_correction(400, 26);
+        assert!(
+            (c - 400.0 / 374.0).abs() < 1e-12,
+            "expected n/(n-k), got {c}"
+        );
+        // 6.5% of the variance, which is 3.2% of the standard error. That cell
+        // covered at 89.2% with a bias of 0.02 sd — nothing was wrong with the
+        // point estimate, the interval was simply too narrow.
+        assert!(c > 1.06 && c < 1.08, "correction should be ~6.9%, got {c}");
+
+        // At the sample sizes where this went unnoticed it is invisible, which
+        // is exactly why it went unnoticed.
+        let big = projection_dof_correction(2_000, 5);
+        assert!(
+            big < 1.003,
+            "at n=2000, k=5 the correction is a quarter of a percent, got {big}"
+        );
+    }
+
+    /// Degenerate inputs must not produce a correction that inflates or divides
+    /// by zero.
+    #[test]
+    fn projection_correction_is_one_when_it_cannot_apply() {
+        assert!((projection_dof_correction(400, 0) - 1.0).abs() < f64::EPSILON);
+        assert!((projection_dof_correction(10, 10) - 1.0).abs() < f64::EPSILON);
+        assert!((projection_dof_correction(10, 20) - 1.0).abs() < f64::EPSILON);
+    }
+
+    /// The dof rule is Kish's effective count, which is Satterthwaite without
+    /// the Gaussian factor of two.
+    #[test]
+    fn effective_dof_is_the_kish_effective_count() {
+        // Equal contributions: every unit counts, so the effective count is n.
+        let flat = vec![1.0_f64; 100];
+        let d = effective_variance_dof(&flat).expect("well-defined");
+        assert!((d - 99.0).abs() < 1e-9, "expected n-1 cap, got {d}");
+
+        // One contribution dominating: the sum of squares rests on ~1 unit, and
+        // the rule must say so rather than reporting the sample size.
+        let mut heavy = vec![1.0_f64; 1_000];
+        heavy[0] = 1_000.0;
+        let d = effective_variance_dof(&heavy).expect("well-defined");
+        assert!(
+            d < 2.0,
+            "one unit carries the variance; dof should be ~1, got {d}"
+        );
+    }
+
+    /// Fewer degrees of freedom than the old rule, always — that is the point.
+    #[test]
+    fn the_rule_never_claims_more_than_satterthwaite_did() {
+        // A moderately heavy tail, of the shape strong confounding produces.
+        let psi: Vec<f64> = (1..=500).map(|i| 1.0 / f64::from(i)).collect();
+        let s2: f64 = psi.iter().map(|p| p * p).sum();
+        let s4: f64 = psi.iter().map(|p| p.powi(4)).sum();
+        let legacy = 2.0 * s2 * s2 / (s4 - s2 * s2 / 500.0);
+        let now = effective_variance_dof(&psi).expect("well-defined");
+        assert!(
+            now < legacy,
+            "the correction must reduce claimed dof: {now} vs {legacy}"
+        );
+        assert!(
+            now > legacy / 2.5,
+            "and it must not collapse them either: {now} vs {legacy}"
+        );
+    }
+
+    /// Degenerate input falls back rather than inventing a number.
+    #[test]
+    fn degenerate_contributions_report_no_dof() {
+        assert!(effective_variance_dof(&[]).is_none());
+        assert!(effective_variance_dof(&[1.0, 2.0]).is_none());
+        assert!(effective_variance_dof(&[0.0; 100]).is_none());
     }
 }
 
@@ -936,5 +1063,629 @@ mod tests {
         assert!((logistic(1000.0) - 1.0).abs() < 1e-12);
         assert!(logistic(-1000.0).abs() < 1e-12);
         assert!((logistic(0.0) - 0.5).abs() < 1e-12);
+    }
+}
+
+/// Diagnostics for finding C14, kept in the tree because the finding is open
+/// and every hypothesis about it so far has been settled by measurement rather
+/// than argument.
+///
+/// `#[ignore]`d: this is a Monte Carlo study, not a check. Run it with
+///
+/// ```bash
+/// cargo test -p cynepic-causal --lib c14 -- --ignored --nocapture --test-threads=1
+/// ```
+///
+/// It lives in the library's own test module rather than an integration suite
+/// so it can reach `psi`, the propensity design and the private dof rules. It
+/// is deliberately outside the suites `scripts/findings-ratchet.sh` scans —
+/// those hold specs that must fail, and a diagnostic that prints is neither.
+#[cfg(test)]
+mod c14_diagnostics {
+    use super::*;
+    use cynepic_testkit::Dgp;
+
+    /// Rebuild the influence contributions the estimator uses, so alternative
+    /// degrees-of-freedom rules can be compared on identical input.
+    fn influence(
+        treatment: &Array1<f64>,
+        outcome: &Array1<f64>,
+        model: &PropensityModel,
+    ) -> (Vec<f64>, f64, f64, f64, f64) {
+        let n = treatment.len();
+        #[allow(clippy::cast_precision_loss)]
+        let n_f = n as f64;
+        let (mut sum_w1, mut sum_w0, mut sum_w1y, mut sum_w0y) = (0.0, 0.0, 0.0, 0.0);
+        for i in 0..n {
+            let e = model.scores[i].clamp(OVERLAP_LOWER, OVERLAP_UPPER);
+            if treatment[i] > 0.5 {
+                let w = 1.0 / e;
+                sum_w1 += w;
+                sum_w1y += w * outcome[i];
+            } else {
+                let w = 1.0 / (1.0 - e);
+                sum_w0 += w;
+                sum_w0y += w * outcome[i];
+            }
+        }
+        let (mu1, mu0) = (sum_w1y / sum_w1, sum_w0y / sum_w0);
+        let (wbar1, wbar0) = (sum_w1 / n_f, sum_w0 / n_f);
+
+        let mut psi = vec![0.0; n];
+        for i in 0..n {
+            let e = model.scores[i].clamp(OVERLAP_LOWER, OVERLAP_UPPER);
+            psi[i] = if treatment[i] > 0.5 {
+                (outcome[i] - mu1) / (e * wbar1)
+            } else {
+                -(outcome[i] - mu0) / ((1.0 - e) * wbar0)
+            };
+        }
+        (psi, mu1, mu0, wbar1, wbar0)
+    }
+
+    /// Candidate 1, **refuted**: model-based fourth moment.
+    ///
+    /// Satterthwaite's `nu` depends only on the ratio `S4 / S2^2`, so a uniform
+    /// rescaling of the influence contributions cancels — which made it look
+    /// legitimate to compute that ratio from model-based moments. The empirical
+    /// `S4` is biased down under heavy tails (median 1.39e-1 against a mean of
+    /// 1.66e-1 at strong confounding), which biases `nu` *up*, so replacing it
+    /// with an expectation over `T_i ~ Bernoulli(e_i)` — using every unit in
+    /// both arms, so the `1/e` tail is fully represented — should have helped.
+    ///
+    /// It did the opposite: `nu` went from 14.5 to 30.6 and coverage fell.
+    ///
+    /// The reason is the assumption hiding in it. Taking `E[psi^4]` as
+    /// `m4_arm / e^3` treats the outcome residual's moments as independent of
+    /// the propensity. Under confounding they are *not* independent — that is
+    /// what confounding means. Units with extreme `e` also have extreme
+    /// outcomes, so the true fourth moment is far larger than the product of
+    /// the two marginals, and the model-based estimate smooths away exactly the
+    /// co-movement that creates the tail.
+    ///
+    /// Kept, unused, so the next person does not have the same idea twice.
+    #[allow(dead_code)]
+    fn model_based_dof(
+        treatment: &Array1<f64>,
+        outcome: &Array1<f64>,
+        model: &PropensityModel,
+        mu1: f64,
+        mu0: f64,
+        wbar1: f64,
+        wbar0: f64,
+    ) -> Option<f64> {
+        let n = treatment.len();
+        #[allow(clippy::cast_precision_loss)]
+        let n_f = n as f64;
+
+        // Weighted residual moments per arm: weighting by 1/e maps the observed
+        // arm back to the whole population, which is the population the
+        // expectation below is taken over.
+        let (mut s1, mut m1, mut z1) = (0.0, 0.0, 0.0);
+        let (mut s0, mut m0, mut z0) = (0.0, 0.0, 0.0);
+        for i in 0..n {
+            let e = model.scores[i].clamp(OVERLAP_LOWER, OVERLAP_UPPER);
+            if treatment[i] > 0.5 {
+                let (r, w) = (outcome[i] - mu1, 1.0 / e);
+                s1 += w * r * r;
+                m1 += w * r.powi(4);
+                z1 += w;
+            } else {
+                let (r, w) = (outcome[i] - mu0, 1.0 / (1.0 - e));
+                s0 += w * r * r;
+                m0 += w * r.powi(4);
+                z0 += w;
+            }
+        }
+        if z1 <= 0.0 || z0 <= 0.0 {
+            return None;
+        }
+        let (s1, m1) = (s1 / z1, m1 / z1);
+        let (s0, m0) = (s0 / z0, m0 / z0);
+
+        let (mut big_s2, mut big_s4) = (0.0, 0.0);
+        for i in 0..n {
+            let e = model.scores[i].clamp(OVERLAP_LOWER, OVERLAP_UPPER);
+            big_s2 += s1 / (e * wbar1 * wbar1) + s0 / ((1.0 - e) * wbar0 * wbar0);
+            big_s4 += m1 / (e.powi(3) * wbar1.powi(4)) + m0 / ((1.0 - e).powi(3) * wbar0.powi(4));
+        }
+        if !big_s2.is_finite() || !big_s4.is_finite() || big_s2 <= 0.0 {
+            return None;
+        }
+        let denom = big_s4 / (big_s2 * big_s2) - 1.0 / n_f;
+        if denom <= 0.0 {
+            return None;
+        }
+        let dof = 2.0 / denom;
+        if dof.is_finite() && dof >= 1.0 {
+            Some(dof.min(n_f - 1.0))
+        } else {
+            None
+        }
+    }
+
+    /// The rule that shipped before this investigation: Satterthwaite's `nu`.
+    ///
+    /// Kept so the comparison below contrasts two different things rather than
+    /// a function with itself. Production now uses `effective_variance_dof`,
+    /// which is this without the Gaussian factor of two — see that function for
+    /// why the factor had to go.
+    fn legacy_satterthwaite_dof(psi: &[f64]) -> Option<f64> {
+        let n = psi.len();
+        if n < 4 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n_f = n as f64;
+        let s2: f64 = psi.iter().map(|p| p * p).sum();
+        let s4: f64 = psi.iter().map(|p| p.powi(4)).sum();
+        if !s2.is_finite() || !s4.is_finite() || s2 <= 0.0 {
+            return None;
+        }
+        let denom = s4 - s2 * s2 / n_f;
+        if denom <= 0.0 {
+            return None;
+        }
+        let dof = 2.0 * s2 * s2 / denom;
+        if dof.is_finite() && dof >= 1.0 {
+            Some(dof.min(n_f - 1.0))
+        } else {
+            None
+        }
+    }
+
+    fn coverage(ates: &[f64], ses: &[f64], dofs: &[Option<f64>], truth: f64, rule: &str) -> f64 {
+        let mut hits = 0usize;
+        for i in 0..ates.len() {
+            let crit = match rule {
+                "normal" => 1.959_963_984_540_054,
+                _ => match dofs[i] {
+                    Some(d) if d >= 1.0 => cynepic_core::special::t_quantile(0.975, d),
+                    _ => 1.959_963_984_540_054,
+                },
+            };
+            if (ates[i] - truth).abs() <= crit * ses[i] {
+                hits += 1;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        {
+            100.0 * hits as f64 / ates.len() as f64
+        }
+    }
+
+    /// Where does the noise in the reported standard error come from?
+    ///
+    /// Two candidate sources, and the finding could not tell them apart:
+    ///
+    /// 1. **Heavy tails.** A handful of large influence contributions dominate
+    ///    `sum psi^2`, so that sum is a noisy estimate whatever the propensity.
+    /// 2. **Propensity estimation.** The scores are refitted on every sample, so
+    ///    the weights themselves move, and Satterthwaite — computed within one
+    ///    sample, conditional on the fitted model — cannot see that at all.
+    ///
+    /// Substituting the DGP's *true* propensity isolates them: with the truth
+    /// plugged in, only source 1 remains. Whatever cv survives is heavy tails;
+    /// whatever the estimated-propensity run adds on top is source 2.
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_decompose_the_noise_in_the_standard_error() {
+        const REPS: usize = 600;
+        let cells: [(&str, Dgp); 2] = [
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+        ];
+
+        println!("\nC14 — where the noise in the SE comes from, {REPS} replications\n");
+        println!(
+            "  {:<20} {:>10} {:>9} {:>9} {:>9} {:>8}",
+            "cell / propensity", "true sd", "mean se", "cv(se)", "dof→", "sattw"
+        );
+
+        for (name, dgp) in cells {
+            for estimated in [false, true] {
+                let (mut ates, mut ses, mut sat) = (Vec::new(), Vec::new(), Vec::new());
+                for rep in 0..REPS {
+                    let d = dgp.sample(90_000 + rep as u64);
+                    let model = if estimated {
+                        match PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                        {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        }
+                    } else {
+                        // The true scores, wrapped in the same struct. `design`
+                        // still comes from a fit so the projection has a score
+                        // matrix to work with; only `scores` is replaced.
+                        let Ok(mut m) =
+                            PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                        else {
+                            continue;
+                        };
+                        m.scores = d.propensity.clone();
+                        m
+                    };
+                    let Ok(r) =
+                        PropensityScoreEstimator::ipw_with_model(&d.treatment, &d.outcome, &model)
+                    else {
+                        continue;
+                    };
+                    let (psi, ..) = influence(&d.treatment, &d.outcome, &model);
+                    let (residual, _k) = project_off_propensity_score(&psi, &d.treatment, &model);
+                    ates.push(r.ate());
+                    ses.push(r.std_error());
+                    if let Some(v) = effective_variance_dof(&residual) {
+                        sat.push(v);
+                    }
+                }
+
+                #[allow(clippy::cast_precision_loss)]
+                let r_f = ates.len() as f64;
+                let mean_ate = ates.iter().sum::<f64>() / r_f;
+                let sd =
+                    (ates.iter().map(|a| (a - mean_ate).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt();
+                let mean_se = ses.iter().sum::<f64>() / r_f;
+                let cv = (ses.iter().map(|s| (s - mean_se).powi(2)).sum::<f64>() / (r_f - 1.0))
+                    .sqrt()
+                    / mean_se;
+                // cv(se) ~ 1/sqrt(2 nu) for a scaled chi-squared variance, so
+                // this inverts the observed noise into the dof it implies.
+                let implied = 1.0 / (2.0 * cv * cv);
+                sat.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+                let med_sat = if sat.is_empty() {
+                    f64::NAN
+                } else {
+                    sat[sat.len() / 2]
+                };
+
+                println!(
+                    "  {:<20} {sd:>10.4} {mean_se:>9.4} {cv:>9.3} {implied:>9.1} {med_sat:>8.1}",
+                    format!("{name} / {}", if estimated { "fitted" } else { "TRUE" })
+                );
+            }
+        }
+        println!(
+            "\n  dof→ is the dof the observed noise implies (1 / 2cv^2); sattw is\n               what Satterthwaite reports. The gap between them is what the finding\n               has to explain, and the TRUE-propensity row says how much of it is\n               heavy tails rather than model estimation."
+        );
+    }
+
+    /// What critical value would actually cover, and is the fourth moment the
+    /// reason Satterthwaite does not produce it?
+    ///
+    /// Sweeps a *fixed* dof across cells to find the one that reaches nominal,
+    /// then compares the within-sample fourth moment against its across-
+    /// replication mean. If a typical sample's `S4` sits well below the mean,
+    /// that is the downward bias that inflates `nu` — and it is a property of
+    /// heavy tails, not of anything the estimator did wrong.
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_find_the_dof_that_covers() {
+        const REPS: usize = 600;
+        let cells: [(&str, Dgp); 3] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+        ];
+
+        println!("\nC14 — coverage at a fixed dof, {REPS} replications\n");
+        print!("  {:<20}", "cell");
+        for d in [1e9_f64, 30.0, 15.0, 10.0, 7.0, 5.0, 4.0] {
+            print!(
+                "{:>8}",
+                if d > 1e6 {
+                    "z".to_string()
+                } else {
+                    format!("{d:.0}")
+                }
+            );
+        }
+        println!("{:>10}{:>10}", "med S4", "mean S4");
+
+        for (name, dgp) in cells {
+            let truth = 2.0;
+            let (mut ates, mut ses, mut s4s) = (Vec::new(), Vec::new(), Vec::new());
+            for rep in 0..REPS {
+                let d = dgp.sample(90_000 + rep as u64);
+                let Ok(model) =
+                    PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                else {
+                    continue;
+                };
+                let Ok(r) =
+                    PropensityScoreEstimator::ipw_with_model(&d.treatment, &d.outcome, &model)
+                else {
+                    continue;
+                };
+                let (psi, ..) = influence(&d.treatment, &d.outcome, &model);
+                let (residual, _k) = project_off_propensity_score(&psi, &d.treatment, &model);
+                // Normalised so cells are comparable: S4 / S2^2 is what nu
+                // depends on, and it is invariant to rescaling psi.
+                let s2: f64 = residual.iter().map(|v| v * v).sum();
+                let s4: f64 = residual.iter().map(|v| v.powi(4)).sum();
+                ates.push(r.ate());
+                ses.push(r.std_error());
+                if s2 > 0.0 {
+                    s4s.push(s4 / (s2 * s2));
+                }
+            }
+
+            print!("  {name:<20}");
+            for d in [1e9_f64, 30.0, 15.0, 10.0, 7.0, 5.0, 4.0] {
+                let crit = if d > 1e6 {
+                    1.959_963_984_540_054
+                } else {
+                    cynepic_core::special::t_quantile(0.975, d)
+                };
+                let hits = ates
+                    .iter()
+                    .zip(ses.iter())
+                    .filter(|(a, se)| (*a - truth).abs() <= crit * **se)
+                    .count();
+                #[allow(clippy::cast_precision_loss)]
+                let pct = 100.0 * hits as f64 / ates.len() as f64;
+                print!("{pct:>7.1}%");
+            }
+            s4s.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+            #[allow(clippy::cast_precision_loss)]
+            let mean_s4 = s4s.iter().sum::<f64>() / s4s.len() as f64;
+            println!("{:>10.2e}{:>10.2e}", s4s[s4s.len() / 2], mean_s4);
+        }
+        println!(
+            "\n  The S4 columns are sum(psi^4)/sum(psi^2)^2, the ratio nu depends\n               on. A median well below the mean is the downward bias that inflates\n               Satterthwaite's nu — and it is a property of heavy tails, not a\n               mistake in the formula."
+        );
+    }
+
+    /// Is the residual bias coming from the overlap clamp?
+    ///
+    /// `ipw` clamps fitted scores to `[0.02, 0.98]`. That is a deliberate
+    /// safety rail, but it has a statistical consequence: a clamped weight is
+    /// the wrong weight, so the estimator targets the ATE on a *trimmed*
+    /// population while the harness scores it against the full-population ATE.
+    /// Bias of that shape would cap achievable coverage no matter how good the
+    /// interval is, which would make the remaining gap unfixable by any dof
+    /// rule — a different finding from the one recorded.
+    ///
+    /// Prints how often the clamp binds, and the bias next to it.
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_is_the_residual_bias_from_the_overlap_clamp() {
+        const REPS: usize = 400;
+        let cells: [(&str, Dgp); 4] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+        ];
+
+        println!("\nC14 — does the overlap clamp explain the bias? {REPS} replications\n");
+        println!(
+            "  {:<24} {:>10} {:>9} {:>9} {:>10}",
+            "cell", "clamped %", "bias", "true sd", "bias/sd"
+        );
+
+        for (name, dgp) in cells {
+            let (mut ates, mut truths, mut clamped) = (Vec::new(), Vec::new(), Vec::new());
+            for rep in 0..REPS {
+                let d = dgp.sample(90_000 + rep as u64);
+                let Ok(model) =
+                    PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                else {
+                    continue;
+                };
+                let Ok(r) =
+                    PropensityScoreEstimator::ipw_with_model(&d.treatment, &d.outcome, &model)
+                else {
+                    continue;
+                };
+                let n_clamped = model
+                    .scores
+                    .iter()
+                    .filter(|e| **e < OVERLAP_LOWER || **e > OVERLAP_UPPER)
+                    .count();
+                #[allow(clippy::cast_precision_loss)]
+                clamped.push(100.0 * n_clamped as f64 / model.scores.len() as f64);
+                ates.push(r.ate());
+                truths.push(d.truth.ate);
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let r_f = ates.len() as f64;
+            let truth = truths.iter().sum::<f64>() / r_f;
+            let mean_ate = ates.iter().sum::<f64>() / r_f;
+            let sd =
+                (ates.iter().map(|a| (a - mean_ate).powi(2)).sum::<f64>() / (r_f - 1.0)).sqrt();
+            let bias = mean_ate - truth;
+            let mean_clamped = clamped.iter().sum::<f64>() / r_f;
+            println!(
+                "  {name:<24} {mean_clamped:>9.2}% {bias:>+9.4} {sd:>9.4} {:>10.2}",
+                bias / sd
+            );
+        }
+        println!(
+            "\n  A bias of 0.2 sd or more caps coverage below nominal on its own:\n               P(|Z + 0.26| < 1.96) is 94.2%, not 95%. Where that is the binding\n               constraint, no degrees-of-freedom rule can close the gap, and the\n               honest move is to say so rather than to widen intervals until the\n               number looks right."
+        );
+    }
+
+    /// Is the remaining gap fixable by *any* interval width?
+    ///
+    /// After the Kish rule, the claimed degrees of freedom (7.1 at strong
+    /// confounding) match the dof the observed noise implies (7.7) almost
+    /// exactly. A t-interval with the right dof should then cover — and it does
+    /// not; the cells sit near 91-92%.
+    ///
+    /// That points away from the variance estimate and at the *joint*
+    /// distribution. A t-interval assumes the error and the standard error are
+    /// independent. If instead the replications with the largest errors are
+    /// systematically the ones with the *smallest* reported SE, no dof rule can
+    /// rescue coverage: the interval is narrowest exactly when it needs to be
+    /// widest, and widening on average just over-covers everywhere else.
+    ///
+    /// Reports `corr(|error|, se)` alongside the share of misses that came from
+    /// below-median SEs. Under independence that share is 50%.
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_is_the_error_independent_of_its_own_standard_error() {
+        const REPS: usize = 800;
+        let cells: [(&str, Dgp); 4] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+        ];
+
+        println!("\nC14 — is the error independent of its own SE? {REPS} replications\n");
+        println!(
+            "  {:<24} {:>14} {:>16} {:>12}",
+            "cell", "corr(|err|,se)", "misses w/ small se", "coverage"
+        );
+
+        for (name, dgp) in cells {
+            let (mut errs, mut ses) = (Vec::new(), Vec::new());
+            let mut truths = Vec::new();
+            for rep in 0..REPS {
+                let d = dgp.sample(90_000 + rep as u64);
+                let Ok(r) = PropensityScoreEstimator::ipw(&d.treatment, &d.outcome, &d.covariates)
+                else {
+                    continue;
+                };
+                errs.push(r.ate() - d.truth.ate);
+                ses.push(r.std_error());
+                truths.push(r.confidence_interval(0.95));
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let r_f = errs.len() as f64;
+
+            let abs: Vec<f64> = errs.iter().map(|e| e.abs()).collect();
+            let ma = abs.iter().sum::<f64>() / r_f;
+            let ms = ses.iter().sum::<f64>() / r_f;
+            let cov: f64 = abs
+                .iter()
+                .zip(ses.iter())
+                .map(|(a, s)| (a - ma) * (s - ms))
+                .sum::<f64>();
+            let va: f64 = abs.iter().map(|a| (a - ma).powi(2)).sum();
+            let vs: f64 = ses.iter().map(|s| (s - ms).powi(2)).sum();
+            let corr = cov / (va.sqrt() * vs.sqrt());
+
+            let mut sorted = ses.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+            let med_se = sorted[sorted.len() / 2];
+
+            let (mut misses, mut misses_small) = (0usize, 0usize);
+            let mut hits = 0usize;
+            for i in 0..errs.len() {
+                let inside = truths[i].is_some_and(|(lo, hi)| {
+                    let point = errs[i];
+                    // Interval is around the estimate; recentre on the error.
+                    let half = (hi - lo) / 2.0;
+                    point.abs() <= half
+                });
+                if inside {
+                    hits += 1;
+                } else {
+                    misses += 1;
+                    if ses[i] < med_se {
+                        misses_small += 1;
+                    }
+                }
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let share = if misses == 0 {
+                f64::NAN
+            } else {
+                100.0 * misses_small as f64 / misses as f64
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let coverage = 100.0 * hits as f64 / r_f;
+            println!("  {name:<24} {corr:>14.3} {share:>15.1}% {coverage:>11.1}%");
+        }
+        println!(
+            "\n  Under independence the third column is 50%. Well above that means\n               the misses are concentrated in the replications that reported the\n               smallest uncertainty — the interval is narrowest exactly when it\n               most needs to be wide, and no degrees-of-freedom rule can fix that."
+        );
+    }
+
+    #[test]
+    #[ignore = "Monte Carlo diagnostic for C14; run with --ignored --nocapture"]
+    fn c14_compare_degrees_of_freedom_rules() {
+        const REPS: usize = 500;
+        let cells: [(&str, Dgp); 8] = [
+            ("benign", Dgp::new()),
+            ("moderate-overlap", Dgp::new().with_overlap(0.35)),
+            ("strong-confounding", Dgp::new().with_confounding(3.0)),
+            ("nonlinear", Dgp::new().with_nonlinearity(2.0)),
+            ("heteroskedastic", Dgp::new().heteroskedastic()),
+            ("heterogeneous-effects", Dgp::new().with_heterogeneity(1.5)),
+            ("small-n", Dgp::new().with_n(120)),
+            ("high-dim", Dgp::new().with_p(25).with_n(400)),
+        ];
+
+        println!("\nC14 — dof rules across the grid, {REPS} replications\n");
+        println!(
+            "  {:<24} {:>7} {:>7} {:>9} {:>9} {:>9}",
+            "cell", "legacy", "kish", "cov(z)", "cov(legacy)", "cov(kish)"
+        );
+
+        let mut worst_kish: f64 = 0.0;
+        let mut worst_name = String::new();
+        for (name, dgp) in cells {
+            let (mut ates, mut ses) = (Vec::new(), Vec::new());
+            let (mut d_sat, mut d_kish, mut truths) = (Vec::new(), Vec::new(), Vec::new());
+
+            for rep in 0..REPS {
+                let d = dgp.sample(90_000 + rep as u64);
+                let Ok(model) =
+                    PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates)
+                else {
+                    continue;
+                };
+                let Ok(r) =
+                    PropensityScoreEstimator::ipw_with_model(&d.treatment, &d.outcome, &model)
+                else {
+                    continue;
+                };
+                let (psi, ..) = influence(&d.treatment, &d.outcome, &model);
+                let (residual, _k) = project_off_propensity_score(&psi, &d.treatment, &model);
+                ates.push(r.ate());
+                ses.push(r.std_error());
+                d_sat.push(legacy_satterthwaite_dof(&residual));
+                d_kish.push(effective_variance_dof(&residual));
+                truths.push(d.truth.ate);
+            }
+            if ates.is_empty() {
+                println!("  {name:<24} (no estimable replication)");
+                continue;
+            }
+
+            let truth = truths.iter().sum::<f64>() / truths.len() as f64;
+            let med = |v: &[Option<f64>]| {
+                let mut x: Vec<f64> = v.iter().filter_map(|d| *d).collect();
+                x.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+                if x.is_empty() {
+                    f64::NAN
+                } else {
+                    x[x.len() / 2]
+                }
+            };
+            let (cz, cs, ck) = (
+                coverage(&ates, &ses, &d_sat, truth, "normal"),
+                coverage(&ates, &ses, &d_sat, truth, "t"),
+                coverage(&ates, &ses, &d_kish, truth, "t"),
+            );
+            if (95.0 - ck).abs() > worst_kish {
+                worst_kish = (95.0 - ck).abs();
+                worst_name = name.to_string();
+            }
+            println!(
+                "  {name:<24} {:>7.1} {:>7.1} {cz:>8.1}% {cs:>8.1}% {ck:>8.1}%",
+                med(&d_sat),
+                med(&d_kish),
+            );
+        }
+        println!(
+            "\n  worst deviation from nominal under the Kish rule: {worst_kish:.1} \
+             points ({worst_name})"
+        );
+        println!(
+            "  Over-coverage counts as a deviation too. A rule that fixes the\n               heavy cells by making every interval wider has not fixed anything."
+        );
     }
 }
