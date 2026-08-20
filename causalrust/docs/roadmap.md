@@ -189,7 +189,7 @@ easy to measure:
 |---|---|---|---|
 | 1 | **Agreement** — same answer as a reference implementation on the same data | Golden-file parity against numpy/scipy/networkx | **Built**, 258 cases |
 | 2 | **Coverage** — intervals deliver the confidence they claim | `cynepic-testkit` harness | **Built**, published per run |
-| 3 | **Refusal** — declines when the data cannot support an answer | Adversarial input suite, refusal rate | **Partly built** |
+| 3 | **Refusal** — declines when the data cannot support an answer | Adversarial corpus, false-answer rate | **Built**, 0 false answers |
 | 4 | **Reproducibility** — same seed, same answer, every platform | Cross-platform determinism tests | **Partly built** |
 | 5 | **Tail latency** — p99, not mean | criterion distributions | **Not built** |
 | 6 | **Footprint** — allocations and peak memory | counting allocator | **Not built** |
@@ -230,12 +230,27 @@ dependency-free.
 
 The property no Python equivalent has, and the one most worth advertising.
 
-- [ ] A corpus of inputs that *should* be refused: rank-deficient designs,
-      empty arms, weak instruments, no overlap, separation, unknown variables
-- [ ] Report the refusal rate and, crucially, the **false-answer rate** — inputs
-      that should have been refused and were answered instead
-- [ ] Compare against DoWhy/statsmodels on the same inputs. Where they return a
-      number and we return an error, that is the product
+- [x] `tests/refusal.rs` and `examples/refusal_report` — an adversarial corpus of
+      inputs that should be refused, plus well-posed inputs that must not be.
+      Without the second half, an estimator that refuses everything would score
+      perfectly.
+- [x] **False-answer rate: 0** across `difference_in_means`, `ols_adjusted`,
+      `ipw` and `att`. False refusals on well-posed data: 0 for `ols_adjusted`.
+- [x] The comparison, measured rather than asserted. On the exactly-collinear
+      design:
+
+      numpy.linalg.lstsq  ->  ATE = -0.000562, rank 4 of 5,
+                              smallest singular value 1.8e-15,
+                              no error and no warning
+      cynepic-causal      ->  RankDeficient { aliased: ["covariate[2]"] }
+
+      `-0.000562` does not read as "undefined". It reads as "no effect", which
+      is a finding somebody might publish. numpy is not wrong — a minimum-norm
+      solution is the documented behaviour for an underdetermined system — but
+      it is wrong for a causal estimate.
+
+- [ ] Extend to a DoWhy/statsmodels comparison once those are pinned in the
+      fixture generator
 
 ### 5. Tail latency, not throughput
 

@@ -374,6 +374,12 @@ jobs:
         run: cargo run -p cynepic-router --example classifier_report --release
           | tee routing-table.txt
 
+      # The refusal rate is the column where this crate differs from the Python
+      # tools it gets compared against, and the difference is not a speedup.
+      - name: Refusal table
+        run: cargo run -p cynepic-causal --example refusal_report --release
+          | tee refusal-table.txt
+
       # Both tables are published on every run. They are the only numbers in
       # this repository that can come back bad, which is exactly why they are
       # worth publishing: a measurement you would suppress when it was
@@ -386,6 +392,7 @@ jobs:
             causalrust/coverage-table.txt
             causalrust/calibration-table.txt
             causalrust/routing-table.txt
+            causalrust/refusal-table.txt
 
   # ---------------------------------------------------------------------------
   # Single required status check. Branch protection points at this one job, so

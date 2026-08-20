@@ -23,6 +23,24 @@ Usage
 
 Requires numpy, scipy and networkx. Versions used are recorded in the output so
 a future disagreement can be attributed.
+
+Reproducing the refusal comparison
+----------------------------------
+`examples/refusal_report` quotes what numpy does with inputs this crate refuses.
+Those numbers are measured, not asserted. To reproduce them::
+
+    import numpy as np
+    n = 60
+    t = np.array([1.0 if i % 2 == 0 else 0.0 for i in range(n)])
+    y = np.array([1.0 + (i % 3) for i in range(n)])
+    x = np.array([[i % 7, i % 5, (i % 7) + (i % 5)] for i in range(n)], float)
+    design = np.column_stack([np.ones(n), t, x])
+    coef, _, rank, sv = np.linalg.lstsq(design, y, rcond=None)
+    print(rank, design.shape[1], coef[1], sv.min())
+    # -> 4 5 -0.000562... 1.76e-15   (no error, no warning)
+
+The third column is the point: -0.000562 does not read as "undefined", it reads
+as "no effect".
 """
 
 from __future__ import annotations
