@@ -398,6 +398,45 @@ jobs:
   # Single required status check. Branch protection points at this one job, so
   # adding a job above does not mean editing branch protection settings.
   # ---------------------------------------------------------------------------
+  python-wheel:
+    name: python wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The Rust unit tests in `bindings/pyo3` cover the same methods and run in
+      # every job. This one exists for what they structurally cannot reach: the
+      # artifact that actually ships. Between a passing Rust test and a working
+      # `import cynepic` sit module registration, the abi3 build, the class
+      # exports, and the getter/method distinction — which exists only on the
+      # Python side. A `#[getter]` that should have been a method is invisible
+      # to Rust and an AttributeError here; that is a real defect this caught.
+      - name: Build the wheel and exercise it
+        run: |
+          set -euo pipefail
+          python -m venv .wheel-venv
+          . .wheel-venv/bin/activate
+          pip install --quiet maturin pytest
+          # `extension-module` leaves the CPython symbols to be supplied by the
+          # interpreter at load time, which is correct for a wheel and wrong for
+          # `cargo build`. maturin is the only place it should be on.
+          maturin build --release --features extension-module \
+            --manifest-path bindings/pyo3/Cargo.toml --out dist
+          pip install --quiet dist/*.whl
+          # Run from a directory without the source tree so the import resolves
+          # to the installed wheel rather than anything adjacent.
+          cd "$(mktemp -d)"
+          python -c "import cynepic; print('cynepic', cynepic.__version__)"
+          cd - >/dev/null
+          pytest bindings/pyo3/tests -q
+
   ci-ok:
     name: CI
     # This job aggregates results and never checks out the repository, so the
@@ -421,6 +460,7 @@ jobs:
       - wasm
       - package
       - findings
+      - python-wheel
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
