@@ -129,6 +129,7 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | `ToolBelief` | bayes | Beta-prior reliability tracking for tools/services |
 | `ToolBeliefSet` | bayes | Multi-tool reliability monitoring |
 | `CynefinRouter` | router | Classifier → domain → route target (budget-aware) |
+| `LexicalClassifier` | router | tf-idf nearest-centroid classifier; trainable, inspectable |
 | `BudgetTracker` | router | Cost tracking with tier-based budget enforcement |
 | `ClassifierMetrics` | router | Confusion matrix, precision/recall/F1, misrouting cost |
 | `StateGraph<S>` | graph | Typed async workflow graph with conditional edges |
@@ -152,12 +153,12 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | core | Complete | 13 | Domain enum, engine trait, policy types, audit types, epistemic state |
 | guardian | **Measured** | 35 + 15 guardrails | Policy chains, Rego v1 (+ v0 opt-in), circuit breaker (**real half-open state**), loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
 | causal | **Validated** | 89 + 32 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
-| router | **Measured** | 17 + 8 accuracy | Keyword classifier (**macro F1 0.290, 0.000 recall on Chaotic**), entropy scoring, cost-aware routing, budget tracking, drift detection |
+| router | **Measured** | 22 + 8 accuracy + 8 lexical | Keyword classifier (**macro F1 0.290, 0.000 recall on Chaotic**); `LexicalClassifier` tf-idf (**0.608 / 0.500 cross-validated**), entropy scoring, cost-aware routing, budget tracking, drift detection |
 | bayes | **Calibrated** | 30 + 12 calibration | 4 conjugate priors with **exact** quantile intervals, 3 MCMC samplers (SBC-verified), belief tracker, tool reliability |
 | graph | **Measured, no findings** | 10 + 15 properties | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 | testkit | Internal | 44 | Ground-truth DGPs, coverage harness, metamorphic relations, Bayesian calibration + SBC, 96-query labelled routing corpus (`publish = false`) |
 
-**Total: 328 tests, 5 open findings specs across 5 measured crates, 0 warnings.**
+**Total: 350+ tests, 5 open findings specs across 5 measured crates, 0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now
@@ -191,12 +192,14 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 > cargo run -p cynepic-router --example classifier_report --release
 > ```
 >
-> **`cynepic-router` is measured and weak.** The keyword classifier scores
-> macro F1 0.290 against a 0.25 random baseline, and misses **all 24**
-> live-incident queries. 78% of natural phrasing matches no keyword at all, so
-> this is a reach problem the embedding classifier must solve — editing the
-> keyword lists against the corpus would only overfit to it. It abstains rather
-> than guessing, which is what makes it survivable behind an escalation policy.
+> **`cynepic-router` is measured and improving.** The keyword classifier scores
+> macro F1 0.290 against a 0.25 random baseline and misses **all 24**
+> live-incident queries; 78% of natural phrasing matches no keyword at all.
+> `LexicalClassifier` (tf-idf over unigrams and bigrams, nearest centroid) takes
+> that to **0.608 macro F1 and 0.500 Chaotic recall under 4-fold
+> cross-validation**, with 11% of queries producing no signal. R1's bar is 0.70
+> and 0.80, so the finding stays open and the ratchet is unchanged — but most of
+> the distance is covered without a model file, a runtime, or a dependency.
 >
 > **`cynepic-guardian` is property-tested.** Its circuit breaker had no real
 > half-open state — after the reset timeout every caller was admitted, not one

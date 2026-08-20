@@ -180,4 +180,115 @@ async fn main() {
     println!("  mean entropy, labelled queries:   {mean_labelled_entropy:.3}");
     println!("  A classifier that cannot separate these two numbers cannot be trusted to");
     println!("  escalate, because escalation is triggered by exactly that gap.");
+
+    lexical_section();
+}
+
+/// The lexical classifier, cross-validated against the same corpus.
+///
+/// Printed after the keyword numbers so the comparison is unavoidable rather
+/// than something a reader has to go looking for.
+fn lexical_section() {
+    use cynepic_router::LexicalClassifier;
+    use cynepic_testkit::corpus::routing_corpus;
+
+    const DOMAINS: [CynefinDomain; 4] = [
+        CynefinDomain::Clear,
+        CynefinDomain::Complicated,
+        CynefinDomain::Complex,
+        CynefinDomain::Chaotic,
+    ];
+
+    println!("\n── LexicalClassifier, 4-fold cross-validated ────────────────────");
+    println!("  Train on three quarters of the corpus, score the quarter never");
+    println!("  seen, rotate, pool. No fold can be contaminated by its own");
+    println!("  training data — which the shipped exemplars cannot promise,");
+    println!("  because whoever wrote them had read this corpus.\n");
+
+    let corpus = routing_corpus();
+    let k = 4;
+    let mut metrics = ClassifierMetrics::new();
+    for fold in 0..k {
+        let mut train: Vec<(&str, CynefinDomain)> = Vec::new();
+        let mut test: Vec<(&str, CynefinDomain)> = Vec::new();
+        let mut seen: Vec<(CynefinDomain, usize)> = Vec::new();
+        for q in &corpus {
+            let idx = match seen.iter_mut().find(|(d, _)| *d == q.domain) {
+                Some((_, n)) => {
+                    *n += 1;
+                    *n - 1
+                }
+                None => {
+                    seen.push((q.domain, 1));
+                    0
+                }
+            };
+            if idx % k == fold {
+                test.push((q.text, q.domain));
+            } else {
+                train.push((q.text, q.domain));
+            }
+        }
+        let model = LexicalClassifier::train(&train).expect("folds cover every domain");
+        for (text, actual) in test {
+            metrics.record(model.classify_sync(text).domain, actual);
+        }
+    }
+
+    println!(
+        "  {:<14} {:>10} {:>10} {:>10}",
+        "domain", "precision", "recall", "F1"
+    );
+    for d in DOMAINS {
+        println!(
+            "  {:<14} {:>10.3} {:>10.3} {:>10.3}",
+            format!("{d:?}"),
+            metrics.precision(d),
+            metrics.recall(d),
+            metrics.f1(d)
+        );
+    }
+    let macro_f1 = DOMAINS.iter().map(|d| metrics.f1(*d)).sum::<f64>() / 4.0;
+
+    let shipped = LexicalClassifier::with_default_exemplars().expect("ships trained");
+    let silent = corpus
+        .iter()
+        .filter(|q| shipped.classify_sync(q.text).domain == CynefinDomain::Disorder)
+        .count();
+    #[allow(clippy::cast_precision_loss)]
+    let silent_pct = 100.0 * silent as f64 / corpus.len() as f64;
+
+    println!(
+        "\n  {:<26} {:>9} {:>9} {:>9}",
+        "", "keyword", "lexical", "R1 bar"
+    );
+    println!(
+        "  {:<26} {:>9.3} {:>9.3} {:>9.2}",
+        "macro F1", 0.290, macro_f1, 0.70
+    );
+    println!(
+        "  {:<26} {:>9.3} {:>9.3} {:>9.2}",
+        "Chaotic recall",
+        0.000,
+        metrics.recall(CynefinDomain::Chaotic),
+        0.80
+    );
+    println!(
+        "  {:<26} {:>8.0}% {:>8.0}% {:>9}",
+        "queries with no signal", 78.0, silent_pct, "-"
+    );
+
+    println!("\n  The bar is unmet, so R1 stays open and the ratchet is unchanged.");
+    println!("  0.290 -> {macro_f1:.3} against a 0.25 random baseline, and 0.000 ->");
+    println!(
+        "  {:.3} on the class where a wrong answer costs the most, is most of",
+        metrics.recall(CynefinDomain::Chaotic)
+    );
+    println!("  the distance. What is left is what an embedding model is for.");
+
+    println!("\n  Why this is not an embedding model yet: no model file, no");
+    println!("  inference runtime, no new dependency, wasm32-wasip1 still builds,");
+    println!("  results are bit-identical across platforms, and `explain` names");
+    println!("  the terms behind a verdict. Establishing what the cheap approach");
+    println!("  is worth is what gives a later embedding claim a number to beat.");
 }

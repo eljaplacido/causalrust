@@ -17,10 +17,12 @@ pub mod budget;
 pub mod classifier;
 pub mod config;
 pub mod eval;
+pub mod lexical;
 pub mod router;
 
 pub use budget::{BudgetDecision, BudgetTracker, CostMap};
 pub use classifier::{ClassificationResult, ClassifierError, KeywordClassifier, QueryClassifier};
 pub use config::{CostTier, RouteTarget, RouterConfig};
 pub use eval::ClassifierMetrics;
+pub use lexical::LexicalClassifier;
 pub use router::{CynefinRouter, RoutingDecision};

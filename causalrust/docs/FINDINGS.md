@@ -11,8 +11,9 @@
 > - `cynepic-bayes` — every conjugate interval is calibrated and both samplers
 >   pass simulation-based calibration ([B1](#b1), closed).
 > - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
->   **0.000 recall on Chaotic** ([R1](#r1), open). It abstains rather than
->   guessing, which is what makes it survivable behind an escalation policy.
+>   **0.000 recall on Chaotic** ([R1](#r1), open). A new `LexicalClassifier`
+>   takes those to **0.608** and **0.500** under cross-validation, which is most
+>   of the distance to the bar but not all of it, so the finding stays open.
 >
 > - `cynepic-guardian` — circuit breaker, rate limiter and loop detector are
 >   property-tested over operation sequences ([G1](#g1), closed).
@@ -72,7 +73,7 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
 | [C14](#c14) | `estimate::propensity` | Under heavy weights a *small* SE marks the intervals that miss | High | **OPEN** (mechanism identified) |
 | [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
-| [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** |
+| [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** (answered, below bar) |
 | [G1](#g1) | `guardian::circuit_breaker` | No half-open state; whole load restored on a timer | **Critical** | **Closed** |
 
 ```
@@ -170,9 +171,92 @@ problem. At 78% no-signal the approach has no *reach* on ordinary phrasing.
 the next phrasing just as unreachable, so it has deliberately not been done —
 the number stands as the measurement of what a keyword matcher is worth here.
 
-**Fix.** The embedding classifier already on the roadmap. This finding is what
-turns that from a nice-to-have into a quantified requirement, and gives it a
-before number to be judged against.
+### Answered, but not to the bar · `LexicalClassifier`
+
+`cynepic-router::lexical` replaces list membership with tf-idf over unigrams and
+bigrams, one centroid per domain, cosine similarity. Every term contributes,
+weighted by how well it distinguishes the domains, instead of a handful deciding
+and the rest being discarded.
+
+Measured by **4-fold cross-validation on the corpus** — train on three quarters,
+score the quarter never seen, rotate:
+
+| | keyword | lexical | R1's bar |
+|---|---|---|---|
+| macro F1 | 0.290 | **0.608** | 0.70 |
+| Chaotic recall | **0.000** | **0.500** | 0.80 |
+| queries with no signal | 78% | **11%** | — |
+
+**The specs still fail**, by 0.09 on F1 and 0.30 on recall, so R1 stays open and
+the ratchet is unchanged. But 0.290 → 0.608 against a 0.25 random baseline, and
+0.000 → 0.500 on the class that matters most, is most of the distance.
+
+Cross-validation is the headline rather than a single train-and-score run
+because the shipped exemplars were written by someone who had read this corpus.
+Nothing was copied, but it cannot be un-read and "I was careful" is not a
+measurement. No CV fold can be contaminated by its own training data, and it is
+also the harder test — 72 training examples against a purpose-built 48.
+
+**Why not an embedding model.** Still wanted, still on the roadmap. This
+establishes what the cheap approach is worth first, so a later claim about
+embeddings has a real number to beat rather than 0.290. It also costs nothing to
+carry: no model file, no inference runtime, no new dependency, `wasm32-wasip1`
+still builds, results are bit-identical across platforms, and
+`LexicalClassifier::explain` names the terms that drove a verdict — which an
+embedding model gives up.
+
+### Two things the measurement caught
+
+**Entropy ran backwards.** Mean entropy came out at 0.734 on ambiguous input
+against 0.819 on answerable input — the wrong way round, which would have made
+an escalation policy fire on exactly the queries it should have let through. A
+query matching one stray term puts all of its tiny mass on a single domain and
+so looks maximally *decisive*; a rich, specific query matches terms across
+several domains and looks uncertain. Fixed by shrinking the score distribution
+toward uniform in proportion to the evidence — the standard treatment of a weak
+likelihood — rather than by rescaling until the test passed.
+
+**Cosine cannot tell ambiguity from ignorance.** It is length-normalised, which
+is what makes it robust to query length and also what makes it blind to how much
+evidence there is: normalising divides the magnitude away. Measured
+(p10/p50/p90):
+
+| | cosine | evidence mass |
+|---|---|---|
+| ambiguous | 0.00 / 0.09 / 0.19 | 0.0 / 1.0 / 3.3 |
+| answerable | 0.16 / 0.24 / 0.35 | 1.8 / 4.6 / 7.4 |
+
+Cosine overlaps; mass barely does. Abstention is gated on mass.
+
+### The guard that was deliberately changed
+
+The keyword-era guard required **all ten** contentless queries to return
+`Disorder`. The keyword classifier met it trivially, because it had no reach and
+abstained on 78% of *answerable* queries too — abstention was a byproduct of
+blindness, not a designed safety property, and a guard a blind classifier passes
+for free measures nothing.
+
+The lexical classifier answers five of the ten. The frontier is measured and
+there is no free point on it:
+
+| evidence threshold | ambiguous answered | macro F1 | Chaotic recall | corpus silent |
+|---|---|---|---|---|
+| 1.5 (default) | 5/10 | 0.608 | 0.500 | 11% |
+| 2.5 | 3/10 | 0.541 | 0.458 | 18% |
+| 4.0 | 1/10 | 0.494 | 0.375 | 36% |
+
+Buying back the old guard costs a fifth of the macro F1 and a quarter of the
+Chaotic recall — it buys silence on ten contentless queries by missing more live
+incidents. So the property is restated as what matters operationally: most
+contentless input still abstains, **nothing contentless is ever answered
+confidently** (no ambiguous query may take more than half the posterior), and
+entropy still separates the two populations. A deployment needing the stricter
+behaviour has `with_min_evidence` and the table above telling it the price.
+
+**Fix.** The embedding classifier already on the roadmap closes the remaining
+0.09 of F1 and 0.30 of recall. This finding is what turns that from a
+nice-to-have into a quantified requirement, and now gives it two before numbers
+rather than one.
 
 **What makes it survivable in the meantime.** The classifier abstains rather
 than guessing: no signal returns `Disorder` at zero confidence, and only 2% of

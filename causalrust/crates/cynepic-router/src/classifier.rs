@@ -18,6 +18,49 @@ pub struct ClassificationResult {
     pub all_scores: Vec<(CynefinDomain, f64)>,
 }
 
+impl ClassificationResult {
+    /// Build a result from domain scores, highest first.
+    ///
+    /// `confidence` is the winner's **share** of the total score, not its raw
+    /// score. A raw score is only comparable within one classifier and one
+    /// scoring scheme; a share is comparable across both, which matters because
+    /// downstream policy thresholds on it. For four domains it ranges from 0.25
+    /// (a four-way tie) to 1.0 (all mass on one).
+    pub fn from_scores(mut all_scores: Vec<(CynefinDomain, f64)>) -> Self {
+        all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let entropy = shannon_entropy(&all_scores);
+        let total: f64 = all_scores.iter().map(|(_, s)| *s).sum();
+
+        let (domain, confidence) = match all_scores.first() {
+            Some((d, s)) if *s > 0.0 && total > 0.0 => (*d, s / total),
+            _ => (CynefinDomain::Disorder, 0.0),
+        };
+        Self {
+            domain,
+            confidence,
+            entropy,
+            all_scores,
+        }
+    }
+
+    /// Decline to classify, keeping the scores that led to the abstention.
+    ///
+    /// `Disorder` at **exactly** zero confidence is the contract an escalation
+    /// policy triggers on, and finding R1's guards assert it. A near-zero
+    /// confidence would be a different and much worse signal: it would read as
+    /// "almost certain about nothing" rather than "no answer".
+    pub fn abstained(mut all_scores: Vec<(CynefinDomain, f64)>) -> Self {
+        all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let entropy = shannon_entropy(&all_scores);
+        Self {
+            domain: CynefinDomain::Disorder,
+            confidence: 0.0,
+            entropy,
+            all_scores,
+        }
+    }
+}
+
 /// Compute normalized Shannon entropy over classification scores.
 ///
 /// Returns a value in [0.0, 1.0] where 0.0 = all mass on one domain
@@ -189,6 +232,15 @@ pub enum ClassifierError {
 
     #[error("Classification produced no confident result")]
     NoConfidentResult,
+
+    /// A classifier could not be built from the examples it was given.
+    ///
+    /// Distinct from failing to classify: this is a malformed *classifier*, and
+    /// returning one that can only ever answer one way would be the same shape
+    /// of mistake as finding C12 — a confident answer to a question that has
+    /// none.
+    #[error("cannot train a classifier: {0}")]
+    Untrainable(String),
 }
 
 #[cfg(test)]
