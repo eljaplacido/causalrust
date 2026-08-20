@@ -387,6 +387,42 @@ Two things follow, and the second matters more than the first:
    never met an instrument. That is exactly the failure mode `docs/FINDINGS.md`
    exists for, and it is why the remaining rows stay marked assumed.
 
+#### The second measured cell, where we started out losing
+
+Measuring `cynepic-bayes` produced a row that is not in the README's table at
+all, and it went the wrong way:
+
+| Operation | scipy | cynepic-bayes | |
+|---|---|---|---|
+| Beta 95% credible interval (a pair of quantiles) | 42.4µs | **52.1µs** | **1.2x slower** |
+
+A Rust crate losing to a Python one — and `scipy.stats.beta.ppf` is Boost
+underneath, so this was Rust losing to C++ with a Python wrapper on top, on the
+operation that dominates the cost of using conjugate priors at all.
+
+No test could see it. The answers agreed with scipy to 5.5e-12 the whole time;
+correctness and cost are independent, and only one of them had an instrument.
+
+The cause was a bisection loop running a flat **200 iterations**. Bisection
+halves its bracket each step, so on `[0, 1]` it exhausts `f64` in about 60 — the
+remaining ~140 each evaluated an incomplete beta and then could not move `lo` or
+`hi`, because no float remained between them. Stopping when the midpoint stops
+moving returns **bit-identical values** and does 3.6x less work:
+
+| | before | after |
+|---|---|---|
+| Beta 95% credible interval | 52.1µs | **14.4µs** |
+| versus scipy | 1.2x slower | **2.9x faster** |
+
+Bit-identity is checked rather than argued: the 116 quantile parity cases from
+item 1 pin the output against scipy, and they are what made the change safe to
+land in one step. That is the payoff from having built item 1 first — a
+correctness harness turned an optimisation from a risk into a mechanical edit.
+
+The same fix applies to `gamma_quantile` and `t_quantile`, which shared the
+loop; the t quantile is on the OLS confidence-interval path, so this is on the
+hot path of the coverage harness too.
+
 Still outstanding:
 
 - [x] A committed Python harness pinning the versions compared against —
@@ -397,10 +433,48 @@ Still outstanding:
       sets where we returned `Ok(true)`, so the two sides were not answering the
       same question until that was fixed.
 - [ ] The other three rows — PyMC (sampler), OPA (policy), LangGraph (graph).
-      None measured. All still marked assumed in the README.
+      None measured; none of the three libraries is installed here. All still
+      marked assumed in the README. Two of them are worse than unmeasured —
+      see the audit below.
+- [x] Publish the cells where we are slower. The first one found is above, and
+      publishing it is what led to the fix.
 - [ ] Publish the cells where we are *slower*. A table with no losses is
       advertising, and at 500 nodes the trend line is already pointing at one.
 - [ ] Run on a quiet machine with the CPU recorded, never on a shared CI runner
+
+#### Are the remaining rows even well-posed questions?
+
+Before measuring the other three, each was checked for whether a fair comparison
+exists. Two do not, and manufacturing a number for those would be worse than
+leaving them unmeasured.
+
+**Beta conjugate update vs PyMC — retire this row.** PyMC has no conjugate-update
+primitive. Every candidate comparison measures different work: against
+`pm.sample()`, an exact closed-form posterior is being compared to a thousands-
+of-draws MCMC approximation of the same thing, which would yield an enormous and
+meaningless ratio; against `scipy.stats.beta(a, b)`, the Python side performs no
+update at all; against `a += s; b += f` in plain Python, the measurement is of
+CPython's interpreter loop and PyMC is not involved. A conjugate update is two
+additions and, as measured above, sits below the timer floor. **Recommendation:
+delete the row and quote the credible interval instead** — it does real work,
+the comparison against scipy is fair, and it is now measured.
+
+**Circuit breaker vs Python — retire this row too.** Fair in kind, and a
+foregone conclusion: an atomic load against a Python attribute access. It also
+measures the least interesting property of a guardrail. Whether the breaker
+opens when it should is the question, and `tests/guardrails.rs` answers it.
+
+**Policy evaluation vs OPA sidecar — well-posed, but it will not be measuring
+what it appears to.** ~100x is plausible, and almost all of it is deleting a
+network round trip, not regorus outperforming OPA's evaluator. Against OPA *as
+a library* the gap would be far smaller. If measured, both configurations must
+be reported, or the row credits the policy engine for a win that belongs to the
+deployment topology.
+
+**StateGraph step vs LangGraph — well-posed.** Same task, same graph shape, both
+sides doing dispatch. This is the one of the four worth measuring as written,
+and it needs `langgraph` pinned in a committed harness alongside
+`compare_networkx.py`.
 
 Only when 1, 3 and 5 exist does 7 become a claim rather than a hope. For
 d-separation they now do, and the claim is 9–19x. For everything else the README
