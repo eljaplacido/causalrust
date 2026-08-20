@@ -11,7 +11,7 @@
 >   pass simulation-based calibration ([B1](#b1), closed).
 > - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
 >   **0.000 recall on Chaotic** ([R1](#r1), open). A new `LexicalClassifier`
->   takes those to **0.608** and **0.500** under cross-validation, which is most
+>   takes those to **0.656** and **0.625** under cross-validation, which is most
 >   of the distance to the bar but not all of it, so the finding stays open.
 >
 > - `cynepic-guardian` — circuit breaker, rate limiter and loop detector are
@@ -182,19 +182,72 @@ score the quarter never seen, rotate:
 
 | | keyword | lexical | R1's bar |
 |---|---|---|---|
-| macro F1 | 0.290 | **0.608** | 0.70 |
-| Chaotic recall | **0.000** | **0.500** | 0.80 |
-| queries with no signal | 78% | **11%** | — |
+| macro F1 | 0.290 | **0.656** | 0.70 |
+| Chaotic recall | **0.000** | **0.625** | 0.80 |
+| queries with no signal | 78% | **14%** | — |
 
-**The specs still fail**, by 0.09 on F1 and 0.30 on recall, so R1 stays open and
-the ratchet is unchanged. But 0.290 → 0.608 against a 0.25 random baseline, and
-0.000 → 0.500 on the class that matters most, is most of the distance.
+Per domain, cross-validated:
+
+| domain | precision | recall | F1 |
+|---|---|---|---|
+| Clear | 0.789 | 0.625 | 0.698 |
+| Complicated | 0.500 | 0.292 | **0.368** |
+| Complex | 0.875 | 0.875 | 0.875 |
+| Chaotic | 0.750 | 0.625 | 0.682 |
+
+**The specs still fail**, by 0.04 on F1 and 0.18 on recall, so R1 stays open and
+the ratchet is unchanged. But 0.290 → 0.656 against a 0.25 random baseline, and
+0.000 → 0.625 on the class that matters most, is most of the distance.
 
 Cross-validation is the headline rather than a single train-and-score run
 because the shipped exemplars were written by someone who had read this corpus.
 Nothing was copied, but it cannot be un-read and "I was careful" is not a
 measurement. No CV fold can be contaminated by its own training data, and it is
 also the harder test — 72 training examples against a purpose-built 48.
+
+### Where the method plateaus
+
+Error analysis named two failure shapes, and each got a fix:
+
+**Complicated misread as Clear** (7 of 24). "what is driving the increase in null
+rates", "which step in the chain is responsible for the latency" — these open
+with the same interrogatives as a lookup, and what separates them is *driving*,
+*responsible*, *analyse*. Plain idf asks "how rare is this term?" when the
+question is "how much does it tell me which domain?". **Class-concentration
+weighting** adds the missing question: `w = idf * (1 + concentration)`, where
+concentration is `1 - H(p)/ln(K)` over the term's distribution across domains.
+A term confined to one domain doubles; one spread evenly is unchanged.
+
+**Chaotic misread as Complex** (4 of 24). "the site is down and we do not know
+why" contains *down* — Chaotic — and *do not know* — Complex. Same cause.
+
+Plus **light stemming**, because with 72 training examples *failing*, *failed*
+and *fails* are three unrelated terms to a model that has seen each once.
+
+The full sweep, 4-fold cross-validated:
+
+| matching | weighting | macro F1 | Chaotic recall | Complicated F1 |
+|---|---|---|---|---|
+| centroid | idf | 0.611 | 0.583 | 0.341 |
+| **centroid** | **idf x concentration** | **0.656** | **0.625** | 0.368 |
+| top-1 | idf x concentration | 0.639 | 0.625 | 0.476 |
+| top-3 | idf x concentration | 0.661 | 0.583 | 0.465 |
+| top-5 | idf x concentration | 0.607 | 0.500 | 0.378 |
+
+`top-3` scores a hair higher on macro F1 and much better on Complicated, and
+**centroid was chosen anyway** — it is 0.042 better on Chaotic recall, which R1
+ranks above everything else. A 0.005 difference in macro F1 is selection noise;
+0.042 of Chaotic recall is one more missed incident in twenty-four.
+
+**This is model selection on the evaluation set**, and the winner's CV score is
+therefore the best of eight draws rather than an unbiased estimate. R1's bar is a
+threshold to clear, not a leaderboard to top, so the reading is "which
+configuration to prefer" — but the 0.656 should be read as mildly optimistic.
+
+The spread across all eight configurations is 0.579 to 0.661. **That is the
+plateau**: bag-of-words over ~72 short training examples lands in the mid-0.6s
+whatever the weighting, matching or stemming. The remaining 0.04 of F1 and 0.18
+of recall are not another feature away.
 
 **Why not an embedding model.** Still wanted, still on the roadmap. This
 establishes what the cheap approach is worth first, so a later claim about
@@ -240,17 +293,35 @@ there is no free point on it:
 
 | evidence threshold | ambiguous answered | macro F1 | Chaotic recall | corpus silent |
 |---|---|---|---|---|
-| 1.5 (default) | 5/10 | 0.608 | 0.500 | 11% |
-| 2.5 | 3/10 | 0.541 | 0.458 | 18% |
-| 4.0 | 1/10 | 0.494 | 0.375 | 36% |
+| 1.0 | 4/10 | 0.649 | 0.625 | 9% |
+| **1.5 (default)** | **4/10** | **0.656** | **0.625** | **14%** |
+| 2.0 | 4/10 | 0.607 | 0.542 | 17% |
+| 2.5 | 2/10 | 0.595 | 0.542 | 19% |
+| 3.0 | 1/10 | 0.556 | 0.458 | 29% |
 
-Buying back the old guard costs a fifth of the macro F1 and a quarter of the
-Chaotic recall — it buys silence on ten contentless queries by missing more live
-incidents. So the property is restated as what matters operationally: most
-contentless input still abstains, **nothing contentless is ever answered
-confidently** (no ambiguous query may take more than half the posterior), and
-entropy still separates the two populations. A deployment needing the stricter
-behaviour has `with_min_evidence` and the table above telling it the price.
+Buying back the old guard costs a sixth of the macro F1 and a quarter of the
+Chaotic recall — it buys silence on contentless queries by missing more live
+incidents.
+
+So the property is restated as what matters operationally, and the bound is
+**asymmetric**, because the domains are not interchangeable in what they
+authorise:
+
+- `Clear` means "the answer is a lookup" — act without further inquiry. That is
+  the one route where being wrong about contentless input is dangerous, so it is
+  held to the strict bound: never more likely than every other domain combined.
+- `Complicated`, `Complex` and `Chaotic` all mean "do not assume you already
+  know" — analyse, probe, or stabilise first. Routing an unclear query there is
+  conservative rather than reckless, so the bound is looser while still
+  forbidding real confidence.
+
+Measured, the split falls exactly along that line. Of the four contentless
+queries the classifier answers, the one it routes to `Clear` sits at **0.407**,
+and the only one above 0.5 goes to `Complex` at **0.515** — because "not sure"
+is a genuine uncertainty marker rather than noise.
+
+A deployment needing the stricter behaviour has `with_min_evidence` and the
+table above telling it the price.
 
 **Fix.** The embedding classifier already on the roadmap closes the remaining
 0.09 of F1 and 0.30 of recall. This finding is what turns that from a

@@ -122,6 +122,105 @@ const MIN_EVIDENCE: f64 = 1.5;
 /// see [`LexicalClassifier::classify_sync`]. Set near the answerable median.
 const FULL_EVIDENCE: f64 = 4.0;
 
+/// How terms are weighted when building vectors.
+///
+/// # Why idf alone is not enough here
+///
+/// Inverse document frequency asks "how rare is this term?". For routing, the
+/// question is "how much does this term tell me *which domain*?" — and those
+/// come apart badly on this corpus. Measured, the two largest error classes
+/// were:
+///
+/// * **Complicated misread as Clear** (7 of 24). "what is driving the increase
+///   in null rates", "which step in the chain is responsible for the latency" —
+///   these open with the same interrogatives as a lookup. What separates them is
+///   *driving*, *responsible*, *analyse*, and idf has no way to know those
+///   matter more than *what* and *which*.
+/// * **Chaotic misread as Complex** (4 of 24). "the site is down and we do not
+///   know why" contains *down* — a Chaotic marker — and *do not know* — a
+///   Complex one. Under plain idf the two compete on rarity alone.
+///
+/// Class concentration adds the missing question. A term appearing only in one
+/// domain's examples is worth more than an equally rare term spread evenly
+/// across four, and the weight says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weighting {
+    /// Plain inverse document frequency.
+    Idf,
+    /// Idf scaled by how concentrated the term is in one domain.
+    ///
+    /// `w = idf * (1 + concentration)`, where concentration is
+    /// `1 - H(p) / ln(K)` over the term's distribution across the `K` domains.
+    /// A term confined to one domain scores 1; one spread evenly scores 0.
+    IdfTimesConcentration,
+}
+
+/// How a query is scored against a domain's training examples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Matching {
+    /// Average the domain's examples into one vector, compare against that.
+    ///
+    /// Cheap and stable, and wrong when a domain has several distinct surface
+    /// forms. Chaotic does: *stop it now*, *the site is down*, *it is charging
+    /// real money on every retry*. Averaging those produces a vector that
+    /// resembles none of them.
+    Centroid,
+    /// Average the `k` closest examples in the domain.
+    ///
+    /// `k = 1` is nearest neighbour, which keeps every mode but is at the mercy
+    /// of one training example. Larger `k` trades that back for stability.
+    TopK(usize),
+}
+
+/// Options that change what the classifier learns.
+#[derive(Debug, Clone, Copy)]
+pub struct TrainingOptions {
+    /// How queries are scored against each domain.
+    pub matching: Matching,
+    /// Term weighting scheme.
+    pub weighting: Weighting,
+    /// Strip common English suffixes before indexing.
+    ///
+    /// With 48 to 72 training examples, *failing*, *failed* and *fails* are
+    /// three unrelated terms to a model that has seen each once. Conflating
+    /// them is worth more here than the precision it costs.
+    pub stem: bool,
+}
+
+impl Default for TrainingOptions {
+    /// The measured defaults. See `configuration_sweep` in
+    /// `tests/lexical_accuracy.rs` for the comparison that chose them.
+    fn default() -> Self {
+        // Chosen by `configuration_sweep`. `top-3` scores a hair higher on
+        // macro F1 (0.661 vs 0.656) and much better on Complicated, but lower
+        // on **Chaotic recall** (0.583 vs 0.625) — and R1 ranks Chaotic above
+        // everything else, because a live incident answered from cache is the
+        // failure the Cynefin split exists to prevent. A 0.005 difference in
+        // macro F1 is selection noise; a 0.042 difference in Chaotic recall is
+        // one more missed incident in twenty-four.
+        Self {
+            matching: Matching::Centroid,
+            weighting: Weighting::IdfTimesConcentration,
+            stem: true,
+        }
+    }
+}
+
+/// Strip a few common English suffixes.
+///
+/// Deliberately not a full Porter stemmer: this runs on eight-word questions
+/// with a few hundred training terms, where the wins come from the handful of
+/// inflections that actually recur. A longer rule list would mostly add ways to
+/// merge words that should have stayed apart.
+fn stem_word(w: &str) -> String {
+    for suffix in ["ing", "ed", "es", "s"] {
+        if w.len() > suffix.len() + 3 && w.ends_with(suffix) {
+            return w[..w.len() - suffix.len()].to_string();
+        }
+    }
+    w.to_string()
+}
+
 /// A tf-idf nearest-centroid classifier over unigrams and bigrams.
 #[derive(Debug, Clone)]
 pub struct LexicalClassifier {
@@ -136,6 +235,10 @@ pub struct LexicalClassifier {
     max_idf: f64,
     /// L2-normalised centroid per domain.
     centroids: Vec<(CynefinDomain, Vec<f64>)>,
+    /// Every training example's vector, kept for [`Matching::TopK`].
+    exemplars: Vec<(CynefinDomain, Vec<f64>)>,
+    /// How this model was trained; needed so queries are tokenized the same way.
+    options: TrainingOptions,
     /// Evidence below which the classifier abstains. See [`MIN_EVIDENCE`].
     ///
     /// Exposed because it is the single knob that trades recall against
@@ -151,11 +254,12 @@ pub struct LexicalClassifier {
 /// Bigrams are not a refinement here, they are most of the point: `what if`,
 /// `right now` and `why did` are the terms that carry Cynefin signal, and each
 /// is invisible to a unigram model that sees only `what`, `now` and `did`.
-fn tokenize(text: &str) -> Vec<String> {
+fn tokenize_with(text: &str, stem: bool) -> Vec<String> {
     let words: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
+        .map(|w| if stem { stem_word(&w) } else { w })
         .collect();
 
     let mut terms = words.clone();
@@ -175,6 +279,18 @@ impl LexicalClassifier {
     /// not a classifier, and returning one silently would be the same class of
     /// mistake as finding C12.
     pub fn train(examples: &[(&str, CynefinDomain)]) -> Result<Self, ClassifierError> {
+        Self::train_with(examples, TrainingOptions::default())
+    }
+
+    /// Train with explicit options.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::train`].
+    pub fn train_with(
+        examples: &[(&str, CynefinDomain)],
+        options: TrainingOptions,
+    ) -> Result<Self, ClassifierError> {
         if examples.is_empty() {
             return Err(ClassifierError::Untrainable(
                 "cannot train on an empty example set".into(),
@@ -183,7 +299,7 @@ impl LexicalClassifier {
 
         let tokenized: Vec<(Vec<String>, CynefinDomain)> = examples
             .iter()
-            .map(|(text, domain)| (tokenize(text), *domain))
+            .map(|(text, domain)| (tokenize_with(text, options.stem), *domain))
             .collect();
 
         let mut domains: Vec<CynefinDomain> = Vec::new();
@@ -232,6 +348,51 @@ impl LexicalClassifier {
             })
             .collect();
 
+        // Class concentration: how unevenly a term is spread across domains.
+        //
+        // `1 - H(p) / ln(K)` over the term's per-domain counts. A term confined
+        // to one domain scores 1, one spread evenly scores 0. Multiplying idf by
+        // `1 + concentration` leaves an uninformative term where it was and at
+        // most doubles a decisive one — a bounded adjustment, not a free
+        // parameter.
+        let idf = match options.weighting {
+            Weighting::Idf => idf,
+            Weighting::IdfTimesConcentration => {
+                let width = vocabulary.len();
+                let mut per_domain: Vec<Vec<f64>> = vec![vec![0.0; width]; domains.len()];
+                for (terms, domain) in &tokenized {
+                    let Some(d) = domains.iter().position(|x| x == domain) else {
+                        continue;
+                    };
+                    for t in terms {
+                        if let Some(&idx) = vocabulary.get(t) {
+                            per_domain[d][idx] += 1.0;
+                        }
+                    }
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let ln_k = (domains.len() as f64).ln();
+                idf.iter()
+                    .enumerate()
+                    .map(|(idx, w)| {
+                        let total: f64 = per_domain.iter().map(|c| c[idx]).sum();
+                        if total <= 0.0 || ln_k <= 0.0 {
+                            return *w;
+                        }
+                        let entropy: f64 = per_domain
+                            .iter()
+                            .map(|c| {
+                                let p = c[idx] / total;
+                                if p > 0.0 { -p * p.ln() } else { 0.0 }
+                            })
+                            .sum();
+                        let concentration = (1.0 - entropy / ln_k).clamp(0.0, 1.0);
+                        w * (1.0 + concentration)
+                    })
+                    .collect()
+            }
+        };
+
         // Centroid per domain: the mean of its examples' normalised vectors.
         // Normalising *before* averaging is what stops a long example from
         // dominating a short one; the length of a query is an artefact of how
@@ -252,6 +413,11 @@ impl LexicalClassifier {
             normalize(c);
         }
 
+        let exemplars: Vec<(CynefinDomain, Vec<f64>)> = tokenized
+            .iter()
+            .map(|(terms, d)| (*d, Self::vectorize(terms, &vocabulary, &idf, width)))
+            .collect();
+
         let max_idf = idf.iter().copied().fold(1.0_f64, f64::max);
 
         Ok(Self {
@@ -259,6 +425,8 @@ impl LexicalClassifier {
             idf,
             max_idf,
             centroids,
+            exemplars,
+            options,
             min_evidence: MIN_EVIDENCE,
         })
     }
@@ -327,7 +495,7 @@ impl LexicalClassifier {
     pub fn evidence(&self, query: &str) -> (f64, f64) {
         let mut mass = 0.0;
         let mut peak: f64 = 0.0;
-        for t in tokenize(query) {
+        for t in tokenize_with(query, self.options.stem) {
             if let Some(&idx) = self.vocabulary.get(&t) {
                 let w = self.idf.get(idx).copied().unwrap_or(0.0);
                 mass += w;
@@ -339,17 +507,45 @@ impl LexicalClassifier {
 
     /// Cosine similarity to each domain centroid, highest first.
     fn similarities(&self, query: &str) -> Vec<(CynefinDomain, f64)> {
-        let terms = tokenize(query);
+        let terms = tokenize_with(query, self.options.stem);
         let v = Self::vectorize(&terms, &self.vocabulary, &self.idf, self.vocabulary.len());
 
-        let mut scores: Vec<(CynefinDomain, f64)> = self
-            .centroids
-            .iter()
-            .map(|(d, c)| {
-                let dot: f64 = v.iter().zip(c.iter()).map(|(a, b)| a * b).sum();
-                (*d, dot.max(0.0))
-            })
-            .collect();
+        let mut scores: Vec<(CynefinDomain, f64)> = match self.options.matching {
+            Matching::Centroid => self
+                .centroids
+                .iter()
+                .map(|(d, c)| {
+                    let dot: f64 = v.iter().zip(c.iter()).map(|(a, b)| a * b).sum();
+                    (*d, dot.max(0.0))
+                })
+                .collect(),
+            Matching::TopK(k) => self
+                .centroids
+                .iter()
+                .map(|(d, _)| {
+                    let mut sims: Vec<f64> = self
+                        .exemplars
+                        .iter()
+                        .filter(|(ed, _)| ed == d)
+                        .map(|(_, e)| {
+                            v.iter()
+                                .zip(e.iter())
+                                .map(|(a, b)| a * b)
+                                .sum::<f64>()
+                                .max(0.0)
+                        })
+                        .collect();
+                    sims.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                    let take = k.clamp(1, sims.len().max(1));
+                    if sims.is_empty() {
+                        return (*d, 0.0);
+                    }
+                    #[allow(clippy::cast_precision_loss)]
+                    let mean = sims.iter().take(take).sum::<f64>() / take as f64;
+                    (*d, mean)
+                })
+                .collect(),
+        };
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scores
     }
@@ -369,7 +565,7 @@ impl LexicalClassifier {
             return Vec::new();
         };
 
-        let terms = tokenize(query);
+        let terms = tokenize_with(query, self.options.stem);
         let v = Self::vectorize(&terms, &self.vocabulary, &self.idf, self.vocabulary.len());
 
         let mut seen: Vec<String> = Vec::new();
@@ -584,7 +780,7 @@ mod tests {
 
     #[test]
     fn bigrams_are_produced_and_carry_the_signal() {
-        let t = tokenize("what if we tried");
+        let t = tokenize_with("what if we tried", false);
         assert!(t.contains(&"what".to_string()));
         assert!(
             t.contains(&"what if".to_string()),
@@ -594,7 +790,10 @@ mod tests {
 
     #[test]
     fn tokenization_is_punctuation_and_case_insensitive() {
-        assert_eq!(tokenize("Stop, NOW!"), tokenize("stop now"));
+        assert_eq!(
+            tokenize_with("Stop, NOW!", false),
+            tokenize_with("stop now", false)
+        );
     }
 
     /// The failure that defines R1: an urgent query with no crisis keyword.
