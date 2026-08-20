@@ -533,7 +533,7 @@ fn error_analysis() {
 
     println!("\nLexical classifier — cross-validated confusion\n");
     println!("  {:<16} {:<16} {:>6}", "actual", "predicted", "count");
-    confusion.sort_by(|a, b| b.2.cmp(&a.2));
+    confusion.sort_by_key(|a| std::cmp::Reverse(a.2));
     for (actual, predicted, n) in &confusion {
         let mark = if actual == predicted { " " } else { "*" };
         println!(
