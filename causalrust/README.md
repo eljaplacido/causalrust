@@ -107,31 +107,38 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 
 ---
 
-## Performance — UNVERIFIED
+## Performance — assumed, not yet proven
 
-> [!WARNING]
-> **The table below is not a measurement.** It cites a `benchmarks/` directory
-> for its methodology; that directory does not exist, and no benchmark in this
-> repository produces any of these figures. `benches/` contains criterion
-> benchmarks for the estimators and samplers, but they do not compare against
-> NetworkX, PyMC, OPA or LangGraph, and CI builds them without timing them
-> because shared-runner variance swamps the signal.
->
-> These numbers are retained because they are plausible design targets and
-> deleting someone else's work is not this branch's call. They must not be
-> quoted until something measures them. See
-> [docs/FINDINGS.md](docs/FINDINGS.md) for the numbers this repository *can*
-> stand behind — every one of them reproducible from a seeded command.
+These are the speedups we expect from moving this work out of Python. They are
+**assumptions**, not measurements: no benchmark in this repository produces any
+of them.
 
-| Operation | Python Equivalent | cynepic-rs | Claimed speedup |
+| Operation | Python equivalent | cynepic-rs | Assumed speedup |
 |-----------|------------------|------------|---------|
-| DAG d-separation | ~10ms (NetworkX) | ~10µs (petgraph) | **~1,000x** |
-| Beta conjugate prior update | ~1ms (PyMC) | <1µs (direct) | **~1,000x** |
-| Policy evaluation | ~1ms (OPA sidecar) | ~10µs (in-process regorus) | **~100x** |
-| Circuit breaker check | ~100µs (Python) | <100ns (atomics) | **~1,000x** |
-| StateGraph step | ~1ms (LangGraph) | <100µs (typed dispatch) | **~10x** |
+| DAG d-separation | NetworkX | petgraph | ~1,000x |
+| Beta conjugate prior update | PyMC | direct | ~1,000x |
+| Policy evaluation | OPA sidecar | in-process regorus | ~100x |
+| Circuit breaker check | Python | atomics | ~1,000x |
+| StateGraph step | LangGraph | typed dispatch | ~10x |
 
-*Design targets, not measurements. No methodology exists for these figures.*
+**Speed is also not the main reason to use this.** For causal inference the
+value is a number you can act on — an interval that covers, an estimator that
+declines when the data cannot support an answer, a result that reproduces from
+a seed. A fast wrong effect estimate is worth less than a slow right one.
+
+What this repository *can* stand behind today, every figure reproducible from a
+seeded command:
+
+- `ols_adjusted` achieves nominal interval coverage on all nine DGP cells
+- `ipw` is nominal on all eight estimable cells, and **refuses** the ninth
+  rather than answering
+- Every conjugate prior's credible interval is calibrated; both MCMC samplers
+  pass simulation-based calibration
+- Identical seeds give identical chains and identical refutation verdicts
+
+See **[docs/FINDINGS.md](docs/FINDINGS.md)** for those, and
+**[docs/roadmap.md#benchmarking](docs/roadmap.md#benchmarking-what-still-has-to-be-proven)**
+for what has to be built before the table above means anything.
 
 ---
 

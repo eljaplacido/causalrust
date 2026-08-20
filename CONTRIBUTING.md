@@ -18,9 +18,12 @@ Two consequences you will meet immediately:
 - Statistical code needs a **coverage** or **calibration** measurement, not just
   a unit test with a tolerance. `docs/FINDINGS.md` exists because thirty passing
   unit tests coexisted with an estimator at 0.0% interval coverage.
-- Performance claims need a benchmark that produced them. There are currently
-  unverified performance figures in the docs, clearly marked as such. Do not add
-  more, and do not quote the marked ones.
+- Performance claims need a benchmark that produced them. The figures in
+  `causalrust/README.md` are marked as **assumed**; `docs/roadmap.md` breaks
+  down what would have to exist to prove them. Do not add more, and do not quote
+  the marked ones.
+- Cross-implementation claims need a **parity** test first. "1000x faster than
+  NetworkX" is not a claim until "identical to NetworkX" is true.
 
 ## Getting set up
 
@@ -40,7 +43,7 @@ cargo install cargo-deny cargo-hack cargo-llvm-cov
 
 ## The full local gate
 
-CI runs eleven jobs. This is all of them, in the order that fails fastest:
+CI runs nine jobs, plus Miri weekly in a separate workflow. This is all of them, in the order that fails fastest:
 
 ```bash
 cargo fmt --all --check
@@ -97,6 +100,23 @@ template.
 The count has gone up twice: once when a fix for one defect created a smaller
 one, and once when two more crates were measured for the first time. **A ledger
 that only ever shrinks is a ledger that has stopped looking.**
+
+## Parity fixtures
+
+`crates/cynepic-causal/tests/fixtures/parity.json` holds reference answers
+computed by numpy, scipy and networkx. It is committed, so the test suite needs
+no Python.
+
+Regenerate only when adding cases:
+
+```bash
+python3 scripts/generate_parity_fixtures.py   # needs numpy, scipy, networkx
+```
+
+**If a regenerated value differs from what is committed, that is a finding to
+investigate — not a fixture to overwrite.** Either our implementation drifted or
+the reference library changed behaviour, and both are worth knowing before the
+evidence is quietly replaced.
 
 ## Lint policy
 

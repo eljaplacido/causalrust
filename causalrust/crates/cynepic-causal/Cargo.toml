@@ -26,6 +26,8 @@ rand_chacha = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+# Parity fixtures are committed JSON; see tests/parity.rs.
+serde_json = { workspace = true }
 # Ground-truth simulation and the coverage harness. Internal, publish = false,
 # so it never reaches a consumer of this crate.
 cynepic-testkit = { workspace = true }
