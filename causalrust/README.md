@@ -107,22 +107,22 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 
 ---
 
-## Performance — two rows measured, and both moved
+## Performance — three rows measured, and all three moved
 
 | Operation | Python equivalent | cynepic-rs | Speedup | Status |
 |-----------|------------------|------------|---------|--------|
 | DAG d-separation | NetworkX | petgraph | **9–19x** | **measured** |
 | Beta 95% credible interval | scipy (Boost) | `bisect_cdf` | **2.9x** | **measured** |
-| StateGraph step | LangGraph | typed dispatch | ~10x | assumed |
+| StateGraph step | LangGraph | typed dispatch | **100–191x** | **measured** |
 | Policy evaluation | OPA sidecar | in-process regorus | ~100x | assumed, and see below |
 | Beta conjugate prior update | PyMC | direct | — | not a fair comparison |
 | Circuit breaker check | Python | atomics | — | not a fair comparison |
 
-The rows marked **assumed** are what we expect from moving this work out of
-Python. No benchmark in this repository produces them, and they should not be
-quoted. The OPA row is plausible but would mostly be measuring the deletion of
-a network hop rather than the policy engine, so it needs both configurations
-reported or not reporting at all.
+The one row still marked **assumed** is what we expect from moving this work
+out of Python; no benchmark here produces it, and it should not be quoted. It is
+plausible, but it would mostly be measuring the deletion of a network hop rather
+than the policy engine, so it needs both configurations reported or not
+reporting at all.
 
 The two rows marked **not a fair comparison** are worse than unmeasured. PyMC
 has no conjugate-update primitive to compare against, and a conjugate update is
@@ -131,17 +131,22 @@ attribute access, and whether the breaker *opens when it should* is the question
 that matters. Both are proposed for retirement in the roadmap rather than
 quietly measured into something impressive.
 
-Both measured rows are worth reading for what measuring did to them.
+All three measured rows are worth reading for what measuring did to them.
 D-separation came back **50x below its assumption** — 9–19x, not ~1,000x — and
 the ratio *falls* as the graph grows, so most of the win is Python call overhead
-rather than the algorithm. The credible interval came back **1.2x slower than
-scipy**, which is how a 200-iteration bisection loop that needed 60 was found;
-it is 2.9x faster now, and the values are bit-identical either way. Neither
-assumption was dishonest. Both were plausible and had never met an instrument.
-Reproduce them with `scripts/compare_networkx.py`,
-`cargo run -p cynepic-causal --example latency_report --release` and
-`cargo run -p cynepic-bayes --example latency_report --release` on one machine,
-and see
+rather than the algorithm. StateGraph came back **~15x above** its assumption,
+in the opposite direction. The credible interval came back **1.2x slower than
+scipy**, which is how a 200-iteration bisection loop that needed 60 got found;
+it is 2.9x faster now, and the values are bit-identical either way.
+
+None of those assumptions was dishonest. All were plausible, and being wrong in
+both directions is the tell: they were not conservative or optimistic, they were
+simply uncorrelated with the facts, which is what a number that has never met an
+instrument looks like in aggregate.
+
+Reproduce them with `scripts/compare_networkx.py`, `scripts/compare_langgraph.py`,
+and the `latency_report` example in `cynepic-causal`, `cynepic-bayes` and
+`cynepic-graph` — all on one machine — and see
 [docs/roadmap.md](docs/roadmap.md#benchmarking-what-still-has-to-be-proven) for
 what each remaining row would take to prove.
 

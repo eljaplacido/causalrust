@@ -432,10 +432,34 @@ Still outstanding:
       d-separation disjointness defect: NetworkX *raises* on overlapping query
       sets where we returned `Ok(true)`, so the two sides were not answering the
       same question until that was fixed.
-- [ ] The other three rows — PyMC (sampler), OPA (policy), LangGraph (graph).
-      None measured; none of the three libraries is installed here. All still
-      marked assumed in the README. Two of them are worse than unmeasured —
-      see the audit below.
+- [x] **LangGraph (graph) — measured, and understated by an order of
+      magnitude.** `scripts/compare_langgraph.py` against
+      `crates/cynepic-graph/examples/latency_report`, one machine,
+      langgraph 1.2.11:
+
+      | nodes | langgraph/step | cynepic/step | speedup |
+      |---|---|---|---|
+      | 5 | 66.3µs | 550ns | **120x** |
+      | 20 | 58.3µs | 572ns | **102x** |
+      | 100 | 74.9µs | 392ns | **191x** |
+
+      The README assumed ~10x. So of the two rows that were both well-posed
+      and measurable, one was overstated by 50x and the other understated by
+      ~15x. Two plausible assumptions, wrong in opposite directions — which is
+      what un-instrumented figures look like in aggregate: not biased, just
+      noise dressed as a claim. It is also why "our guess was conservative" is
+      not a defence; the guesses were simply uncorrelated with the facts.
+
+      The shapes differ as well. LangGraph's per-step cost is flat in `n`,
+      ours falls — we amortise fixed setup over more steps, theirs is
+      genuinely per-step. And LangGraph carries checkpointing, a channel-based
+      reducer model and interrupt support through every step, so part of the
+      gap is machinery rather than waste. A dispatch win is not a claim that
+      one replaces the other.
+- [ ] OPA (policy) — not measured; the binary is not installed here. Still
+      marked assumed, and see the audit below for why the number would not mean
+      what it appears to.
+- [ ] PyMC (sampler) — not a fair comparison at all. See the audit below.
 - [x] Publish the cells where we are slower. The first one found is above, and
       publishing it is what led to the fix.
 - [ ] Publish the cells where we are *slower*. A table with no losses is
@@ -448,21 +472,27 @@ Before measuring the other three, each was checked for whether a fair comparison
 exists. Two do not, and manufacturing a number for those would be worse than
 leaving them unmeasured.
 
-**Beta conjugate update vs PyMC — retire this row.** PyMC has no conjugate-update
+**Beta conjugate update vs PyMC — kept, marked, and not to be measured.** PyMC has no conjugate-update
 primitive. Every candidate comparison measures different work: against
 `pm.sample()`, an exact closed-form posterior is being compared to a thousands-
 of-draws MCMC approximation of the same thing, which would yield an enormous and
 meaningless ratio; against `scipy.stats.beta(a, b)`, the Python side performs no
 update at all; against `a += s; b += f` in plain Python, the measurement is of
 CPython's interpreter loop and PyMC is not involved. A conjugate update is two
-additions and, as measured above, sits below the timer floor. **Recommendation:
-delete the row and quote the credible interval instead** — it does real work,
-the comparison against scipy is fair, and it is now measured.
+additions and, as measured above, sits below the timer floor.
 
-**Circuit breaker vs Python — retire this row too.** Fair in kind, and a
-foregone conclusion: an atomic load against a Python attribute access. It also
-measures the least interesting property of a guardrail. Whether the breaker
-opens when it should is the question, and `tests/guardrails.rs` answers it.
+**Decision (2026-08-20): the row stays in the README, marked "not a fair
+comparison".** Deleting it would erase the fact that it was ever claimed, and
+that fact is the useful part — a reader who has seen the claim elsewhere needs
+to find out here that it does not hold up. The credible-interval row is what to
+quote instead: it does real work, the scipy comparison is fair, and it is
+measured.
+
+**Circuit breaker vs Python — kept and marked, same reasoning.** Fair in kind,
+and a foregone conclusion: an atomic load against a Python attribute access. It
+also measures the least interesting property of a guardrail. Whether the breaker
+*opens when it should* is the question, and `tests/guardrails.rs` answers it —
+including the half-open state that finding G1 showed did not exist.
 
 **Policy evaluation vs OPA sidecar — well-posed, but it will not be measuring
 what it appears to.** ~100x is plausible, and almost all of it is deleting a
