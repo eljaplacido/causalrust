@@ -13,12 +13,12 @@ publish = false
 description = "Axum HTTP API server for cynepic-rs — CARF/CYNEPIC decision intelligence endpoints"
 
 [dependencies]
-cynepic-core = { path = "../cynepic-core", version = "0.2.0" }
-cynepic-router = { path = "../cynepic-router", version = "0.2.0" }
-cynepic-causal = { path = "../cynepic-causal", version = "0.2.0" }
-cynepic-bayes = { path = "../cynepic-bayes", version = "0.2.0" }
-cynepic-guardian = { path = "../cynepic-guardian", version = "0.2.0", default-features = false }
-cynepic-graph = { path = "../cynepic-graph", version = "0.2.0" }
+cynepic-core = { path = "../cynepic-core", version = "0.3.0" }
+cynepic-router = { path = "../cynepic-router", version = "0.3.0" }
+cynepic-causal = { path = "../cynepic-causal", version = "0.3.0" }
+cynepic-bayes = { path = "../cynepic-bayes", version = "0.3.0" }
+cynepic-guardian = { path = "../cynepic-guardian", version = "0.3.0", default-features = false }
+cynepic-graph = { path = "../cynepic-graph", version = "0.3.0" }
 axum = "0.8"
 tokio = { workspace = true }
 ndarray = { workspace = true }

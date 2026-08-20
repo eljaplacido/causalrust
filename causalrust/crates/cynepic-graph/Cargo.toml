@@ -12,6 +12,12 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[package.metadata.docs.rs]
+# Document every feature. Without this, docs.rs builds default features only,
+# and an optional surface — `guardian`'s Rego evaluator, for one — is absent
+# from the published documentation with no indication it exists.
+all-features = true
+
 [dependencies]
 cynepic-core = { workspace = true }
 serde = { workspace = true }

@@ -300,7 +300,11 @@ impl McpServer {
                 },
                 "serverInfo": {
                     "name": "cynepic-mcp",
-                    "version": "0.2.0"
+                    // From the manifest. A hand-written version string drifts,
+                    // and a client that trusts the wire version then trusts the
+                    // wrong thing. `the_advertised_version_matches_the_crate`
+                    // pins it.
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             })),
             error: None,
@@ -398,7 +402,10 @@ impl McpServer {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    eprintln!("cynepic-mcp v0.2.0 starting on stdio...");
+    eprintln!(
+        "cynepic-mcp v{} starting on stdio...",
+        env!("CARGO_PKG_VERSION")
+    );
 
     let stdin = io::stdin();
     let stdout = io::stdout();

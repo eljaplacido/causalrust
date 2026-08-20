@@ -39,12 +39,12 @@ extension-module = ["pyo3/extension-module"]
 # `version` alongside `path` on every internal dependency. A path-only
 # dependency is a wildcard, which cargo-deny rejects and `cargo publish` cannot
 # resolve.
-cynepic-core = { path = "../../crates/cynepic-core", version = "0.2.0" }
-cynepic-guardian = { path = "../../crates/cynepic-guardian", version = "0.2.0", default-features = false }
-cynepic-causal = { path = "../../crates/cynepic-causal", version = "0.2.0" }
-cynepic-bayes = { path = "../../crates/cynepic-bayes", version = "0.2.0" }
-cynepic-router = { path = "../../crates/cynepic-router", version = "0.2.0" }
-cynepic-graph = { path = "../../crates/cynepic-graph", version = "0.2.0" }
+cynepic-core = { path = "../../crates/cynepic-core", version = "0.3.0" }
+cynepic-guardian = { path = "../../crates/cynepic-guardian", version = "0.3.0", default-features = false }
+cynepic-causal = { path = "../../crates/cynepic-causal", version = "0.3.0" }
+cynepic-bayes = { path = "../../crates/cynepic-bayes", version = "0.3.0" }
+cynepic-router = { path = "../../crates/cynepic-router", version = "0.3.0" }
+cynepic-graph = { path = "../../crates/cynepic-graph", version = "0.3.0" }
 
 # 0.24 and 0.25 carry two RUSTSEC advisories: an out-of-bounds read in `nth` /
 # `nth_back` for `PyList`/`PyTuple` iterators (RUSTSEC-2025-0020) and a missing

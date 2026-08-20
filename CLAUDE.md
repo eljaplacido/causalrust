@@ -216,25 +216,50 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 > failing, and four other crates written the same way did fail.
 
 ### Known Gaps
-- **Benchmarks are baselines, not claims.** `benches/` exists (criterion, in
-  causal and bayes) and CI builds but does not time them — shared-runner
-  variance swamps the signal. Two rules: correctness gates the claim, so the IPW
-  group is named `ipw_BROKEN_C5_C13`; and MCMC is measured in **time per
-  effective sample**, never samples per second. No `fuzz/` directory.
-- **Do not carry over the Python project's numbers.** `projectcarfcynepic`'s
-  43/43 benchmark results describe that implementation. This workspace's IPW is
-  measured at 0.0% coverage, so those figures are not evidence about these
-  crates. See [research.md](causalrust/research.md).
+
 - **WASM is partial.** `wasm32-wasip1` works for core/causal/bayes and is gated
   in CI. `wasm32-unknown-unknown` (browser) builds for nothing yet — `uuid` and
   `rand 0.8` both need a `getrandom` JS backend. guardian/graph/router pull
   `tokio = { features = ["full"] }`, which targets no wasm at all.
-- **Performance claims in `causalrust/README.md` and `docs/PITCH.md` are
-  UNVERIFIED design targets.** They cite a `benchmarks/` directory that does not
-  exist. `benches/` does not compare against NetworkX/PyMC/OPA/LangGraph. They
-  are flagged in place; do not quote them.
+- **Two findings remain open**, both quantified and ratchet-tracked:
+  `att` interval coverage (C14, 91.0–92.4% against a 3-point bar) and the
+  router classifier's reach (R1, macro F1 0.656 against a 0.70 bar). Neither
+  blocks a release; both are documented with what would close them.
+- **Per-call allocation counts are unmeasured.** They need a counting
+  `GlobalAlloc`, which `forbid(unsafe_code)` correctly refuses, so it needs an
+  external profiler run out-of-band. Peak RSS *is* measured. See
+  [roadmap.md](causalrust/docs/roadmap.md#benchmarking-what-still-has-to-be-proven).
+- **No `fuzz/` directory.** Nothing takes untrusted binary input, so the yield
+  would be low, but it is absent rather than considered and rejected.
+- **The Python bindings have no Python-level test.** The Rust side of the
+  binding is covered (14 tests), which is where the defects have actually been
+  — a circuit breaker with an empty body, a repr hardcoded to zero. What is not
+  covered is the built wheel itself: `maturin build` output has never been
+  imported and exercised in CI.
+- **Do not carry over the Python project's numbers.** `projectcarfcynepic`'s
+  43/43 benchmark results describe that implementation, not this one. See
+  [research.md](causalrust/research.md).
 - **Not published.** Crates are not on crates.io, so `cargo-semver-checks` has
   no baseline and is deliberately absent from CI until the first publish.
+
+### Benchmarks — measured, and two assumptions were wrong
+
+`benches/` (criterion, in causal and bayes) is built by CI but not timed —
+shared-runner variance swamps the signal. The comparisons that *are* published
+come from committed harnesses run on one machine:
+
+| claim | assumed | measured |
+|---|---|---|
+| d-separation vs NetworkX | ~1,000x | **9–19x** |
+| StateGraph step vs LangGraph | ~10x | **100–191x** |
+| policy vs OPA sidecar | ~100x | **57x** (94.5% of it is the network hop) |
+| policy vs OPA *engine* | — | **3.1x** |
+| Beta credible interval vs scipy | — | **1.2x slower**, then 2.9x faster |
+
+Wrong high, wrong low, and right for the wrong reason. Two rules survive:
+correctness gates the claim, and MCMC is measured in **time per effective
+sample**, never samples per second. `scripts/compare_{networkx,langgraph,opa}.py`
+plus the `*_latency` examples reproduce all of it.
 
 ### Future Work (not blocking release)
 - **Phase 2**: PyO3 bindings, HTTP API (Axum), MCP tool server, browser WASM

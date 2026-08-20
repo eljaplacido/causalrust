@@ -17,11 +17,11 @@ name = "cynepic-mcp"
 path = "src/main.rs"
 
 [dependencies]
-cynepic-core = { path = "../../crates/cynepic-core", version = "0.2.0" }
-cynepic-router = { path = "../../crates/cynepic-router", version = "0.2.0" }
-cynepic-causal = { path = "../../crates/cynepic-causal", version = "0.2.0" }
-cynepic-bayes = { path = "../../crates/cynepic-bayes", version = "0.2.0" }
-cynepic-guardian = { path = "../../crates/cynepic-guardian", version = "0.2.0", default-features = false }
+cynepic-core = { path = "../../crates/cynepic-core", version = "0.3.0" }
+cynepic-router = { path = "../../crates/cynepic-router", version = "0.3.0" }
+cynepic-causal = { path = "../../crates/cynepic-causal", version = "0.3.0" }
+cynepic-bayes = { path = "../../crates/cynepic-bayes", version = "0.3.0" }
+cynepic-guardian = { path = "../../crates/cynepic-guardian", version = "0.3.0", default-features = false }
 ndarray = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

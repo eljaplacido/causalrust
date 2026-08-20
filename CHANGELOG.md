@@ -6,9 +6,14 @@ with the pre-1.0 caveat that minor versions may break the API.
 
 ## [Unreleased]
 
-The theme of this release is that the statistical claims became **measurable**,
-and then most of them turned out to be wrong. Every number below is reproducible
-from a seeded command; see [docs/FINDINGS.md](causalrust/docs/FINDINGS.md).
+## [0.3.0] — 2026-08-20
+
+The theme of this release is that the claims became **measurable**, and then
+most of them turned out to be wrong. Every number below is reproducible from a
+seeded command; see [docs/FINDINGS.md](causalrust/docs/FINDINGS.md).
+
+Thirteen correctness findings closed, two open and quantified. The findings
+ratchet went 18 → 4.
 
 ### Added
 
@@ -45,6 +50,33 @@ from a seeded command; see [docs/FINDINGS.md](causalrust/docs/FINDINGS.md).
 - **Apache-2.0** per-crate `LICENSE` and `NOTICE`, CI-asserted in every tarball.
 - `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue and PR
   templates, Dependabot.
+
+### Added — measurement infrastructure
+
+- **Cross-implementation parity** (`crates/cynepic-causal/tests/parity.rs`) —
+  258 cases against numpy, scipy and networkx, fixtures committed so the suite
+  needs no Python. Worst quantile disagreement 5.5e-12 across 116 cases; 134
+  d-separation verdicts match `networkx.is_d_separator` exactly.
+- **Refusal measurement** (`tests/refusal.rs`, `examples/refusal_report`) — the
+  false-answer rate, target zero, measured at zero. On an exactly collinear
+  design `numpy.linalg.lstsq` returns **−0.000562** with no error or warning;
+  this crate returns `RankDeficient { aliased: ["covariate[2]"] }`.
+- **Reproducibility suites** — replay must be bit-identical; portability is
+  bit-identical only for the operations IEEE-754 requires to be correctly
+  rounded. Committed bit patterns for the arithmetic-only estimators are
+  checked on ubuntu, macOS and windows every push.
+- **Comparison harnesses** — `scripts/compare_networkx.py`,
+  `compare_langgraph.py`, `compare_opa.py`, plus `causal_latency`,
+  `bayes_latency`, `graph_latency` and `guardian_latency` examples.
+- **41 tests for the three surfaces** — `cynepic-server`, `cynepic-mcp` and
+  `cynepic-pyo3` previously had none between them.
+- **`LexicalClassifier`** (`cynepic-router`) — tf-idf over unigrams and bigrams
+  with class-concentration weighting, nearest centroid, and an inspectable
+  `explain`. No model file, no inference runtime, no new dependency.
+- **`PropensityScoreEstimator::ipw_cross_fitted`** and
+  `cross_fitted_propensity`, with an events-per-variable guard that refuses
+  where splitting the sample would make the estimate worse.
+- **`ToolBeliefSet::len`/`is_empty`** (`cynepic-bayes`).
 
 ### Fixed
 
@@ -99,6 +131,44 @@ replications, nominal 95%:
 - `pyo3` 0.24 → 0.29 (RUSTSEC-2026-0176, RUSTSEC-2026-0177); `rand` ≥ 0.9.3
   (RUSTSEC-2026-0097).
 
+### Fixed — this round
+
+- **C14, the IPW interval.** Nominal on every estimable grid cell. Strong
+  confounding 87.3% → 90.3% → **92.3%**, moderate overlap 89.4% → **95.0%**,
+  high-dim **89.2% → 94.3%**. Two causes: the projection's residual sum of
+  squares was corrected by a flat `n/(n-k)` where leverage is uneven (now HC3),
+  and the propensity model scored the units it was fitted on (now out-of-fold
+  where the data supports it). `att` remains open at 91.0–92.4%.
+- **A d-separation defect found by the parity work.** `d_separated(X, Y | {X})`
+  returned `Ok(true)` — a positive finding of independence for a query that has
+  no answer. `networkx.is_d_separator` raises. Now an error.
+- **A Python circuit breaker that could not trip.** `PyCircuitBreaker::
+  record_failure` and `record_success` had empty bodies, so `is_open` was
+  always `False`.
+- **`ToolBeliefSet.__repr__`** reported `tools=0` regardless of contents, and
+  `cynepic.__version__` was a hardcoded literal. Both now derive from reality.
+- **A 200-iteration bisection loop** in `cynepic-core::special` where ~60
+  exhausts `f64`. Credible intervals were **1.2x slower than scipy**; they are
+  now 2.9x faster, with bit-identical output.
+- **Example binaries collided** on one `target/debug/examples/` path, which
+  fails intermittently on Windows. Renamed per crate.
+
+### Changed — this round
+
+- **Version 0.2.0 → 0.3.0.** Pre-1.0, so a minor bump carries the breaking
+  changes listed below.
+- **`ipw` and `att` now cross-fit the propensity model** where the data
+  supports it, which changes the point estimate. Adopted only after measuring
+  every grid cell as distance from nominal; worst regression 0.8 points on a
+  cell already over-covering at 98.5%.
+- **Effective degrees of freedom use Kish's effective count**, not
+  Satterthwaite's — the factor of two assumes squares of Gaussians, and heavy
+  tails are the only condition under which the correction matters at all.
+- **`docs.rs` metadata** on all six published crates, so optional features are
+  documented rather than silently absent.
+- **README performance table** carries measured figures where they exist, and
+  marks two rows "not a fair comparison" rather than deleting them.
+
 ### Changed — breaking
 
 - Every estimator returns `Result`. `ATEResult` fields are private; use the
@@ -117,19 +187,28 @@ replications, nominal 95%:
 
 ### Known issues
 
-- **C14** (open) — IPW/ATT intervals under-cover under strong confounding
-  (ATT 89.3% against nominal 95%). The standard error is *noisy*, not biased: a
-  coefficient of variation of 0.26 implies ~7.5 effective degrees of freedom
-  despite n=2000. A Satterthwaite t-interval recovers most of it; the residual
-  needs a cross-fitted projection.
-- **R1** (open) — the keyword classifier scores macro F1 0.290 against a 0.25
-  random baseline, with **0.000 recall on Chaotic**: 78% of natural phrasing
-  matches no keyword. This is a reach problem requiring the embedding
-  classifier, not a tuning problem. It abstains rather than guessing, which is
-  what makes it survivable behind an escalation policy.
-- **Performance figures in `causalrust/README.md` and `docs/PITCH.md` are
-  unverified design targets**, marked as such in place. They cite a
-  `benchmarks/` directory that does not exist.
+- **C14** (open, ATE half closed) — `ipw` is nominal on every estimable cell;
+  **`att` under-covers at 91.0–92.4%** against a 3-point bar. ATT's bias is
+  0.05 sd, so its ceiling is nominal and the gap is entirely the interval: the
+  projection borrowed from the ATE case is not the correct adjustment for ATT.
+  Closing it needs an outcome model — augmented IPW — which is new capability
+  rather than a fix. Prefer `ols_adjusted` for ATT where the outcome model is
+  plausibly linear.
+- **R1** (open) — `LexicalClassifier` scores macro F1 **0.656** and Chaotic
+  recall **0.625** under 4-fold cross-validation, against a bar of 0.70 and
+  0.80 and a random baseline of 0.25. The keyword classifier it replaces
+  scored 0.290 and **0.000**. Across eight configurations the spread is
+  0.579–0.661, so bag-of-words over ~72 short training examples has plateaued;
+  the rest is what an embedding classifier is for.
+- **Under heavy propensity weights, a small standard error is not evidence of
+  precision.** At strong confounding, 100% of the intervals that failed to
+  cover were the ones reporting a *below-median* standard error. Read
+  `Diagnostics::effective_n` and `variance_dof`; a narrow interval in that
+  regime is the case to distrust.
+- **Per-call allocation counts are unmeasured** — they need a counting
+  `GlobalAlloc`, which `forbid(unsafe_code)` refuses. Peak RSS is measured.
+- **The built Python wheel has no Python-level test.** The Rust side of the
+  binding is covered; `maturin build` output has never been imported in CI.
 - Not published to crates.io, so `cargo-semver-checks` has no baseline.
 - `wasm32-unknown-unknown` (browser) builds for nothing yet;
   `wasm32-wasip1` is gated in CI for core, causal and bayes.
@@ -139,5 +218,6 @@ replications, nominal 95%:
 Initial workspace: six crates covering Cynefin routing, causal inference,
 Bayesian priors and sampling, policy guardrails, and typed workflow graphs.
 
-[Unreleased]: https://github.com/eljaplacido/causalrust/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/eljaplacido/causalrust/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/eljaplacido/causalrust/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/eljaplacido/causalrust/releases/tag/v0.2.0

@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Elja Placido"]
 # Apache-2.0, adopted 2026-08-17. The prior BSL 1.1 already named the Apache
@@ -42,7 +42,7 @@ async-trait = "0.1"
 # `version` is REQUIRED alongside `path`. A path-only dependency cannot be
 # published: `cargo publish` rejects it, and cargo-deny reports it as a wildcard.
 # Keep the version in step with workspace.package.version on every release.
-cynepic-core = { path = "crates/cynepic-core", version = "0.2.0" }
+cynepic-core = { path = "crates/cynepic-core", version = "0.3.0" }
 
 # Internal validation harness: ground-truth DGPs and the coverage machinery.
 # `publish = false`, and used only as a dev-dependency, so it never appears in a
