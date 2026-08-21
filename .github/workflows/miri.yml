@@ -45,7 +45,7 @@ jobs:
     # themselves — those run in 0.15s natively.
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
