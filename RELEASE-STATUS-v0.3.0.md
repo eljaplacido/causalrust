@@ -19,7 +19,7 @@ yours.
 | | |
 |---|---|
 | **Confirmed defects** | 13 closed, **2 open** — each open one quantified with what would close it |
-| **Tests** | **395** passing (404 in the second build configuration, which adds the Python-binding suite). Green on Linux, macOS and Windows |
+| **Tests** | **404** passing (413 in the second build configuration), plus **22 Python tests against the built wheel**. Green on Linux, macOS and Windows |
 | **The worst thing found** | One estimator's confidence intervals contained the true answer **0% of the time** while claiming 95% — and thirty unit tests passed throughout |
 | **Ready to publish** | **Yes.** All six crate names are free, packaging is verified, the runbook is written. Nothing has been sent anywhere |
 
@@ -44,6 +44,10 @@ time across nine deliberately nasty simulated scenarios, against a 95% target.
 Agrees with numpy, scipy and networkx across 258 cases — worst disagreement
 5.5e-12. Given data that cannot support an answer, it **refused all seven times**
 and invented nothing.
+
+**Speed, against the tool you already have.** Faster than `statsmodels` on seven
+of nine measured tasks — 1.8x at n=100k, 2.3x on like-for-like weighting, 3.4x on
+a two-sample contrast. Slower on two, both in the table below.
 
 **Don't.** Publish a confidence interval from the ATT estimator yet — see
 concerns below. And treat a *narrow* interval under heavily skewed data as a
@@ -122,10 +126,20 @@ evidence rather than coincidence.
 ### Three ways to call them
 
 An **HTTP server** (13 tests) exposing classification, estimation, belief updates
-and policy checks. An **MCP tool server** (14 tests) so an AI assistant can use
-these directly as tools. And **Python bindings** (14 Rust tests plus 15 run
-against the actual built wheel), so a data team can use the fast paths without
-writing Rust.
+and policy checks. An **MCP tool server** (19 tests) so an AI assistant can use
+these directly as tools — all eight tools verified callable, every call audited.
+And **Python bindings** (14 Rust tests plus 22 run against the actual built
+wheel), so a data team can use the fast paths without writing Rust.
+
+Python can now estimate causal effects directly — `estimate_ate`,
+`estimate_ate_weighted`, `estimate_att` — each returning a result that carries
+its estimand, population, standard-error kind, interval and weighting
+diagnostics. That was Rust-only until this round, which meant the flagship
+capability was unreachable from where most analysts work.
+
+[`docs/integration.md`](causalrust/docs/integration.md) is the guide, organised
+by which surface you should pick, with every example executed against a running
+server or a built wheel before being written down.
 
 > All three of these surfaces had zero tests when this work started. Two of them
 > had real defects — including a Python circuit breaker that could never trip.
@@ -146,8 +160,32 @@ Every row is something believed to be true that measurement contradicted.
 | Circuit breaker had a half-open recovery state | It didn't — a recovering service got the **entire backlog** at once | fixed |
 | Graph independence check was sound | Returned "independent" for questions that have **no answer** | fixed |
 | Python circuit breaker worked | Recorded nothing. **Could never trip.** | fixed |
+| Drift detection was a router feature | **The module was never compiled in.** Advertised in the docs and the tool manifest; the file existed and was never declared, so the type was unreachable and its four tests had never run | fixed |
+| The agent tool server implemented its manifest | `audit_trail` was advertised with a schema and returned **"Unknown tool"** | implemented |
 
-### Speed claims — assumed against measured
+### Speed against the tools you would otherwise use
+
+| Task | Alternative | cynepic-rs | |
+|---|---|---|---|
+| Two-sample contrast, n=100k | statsmodels 875.6µs | **256.7µs** | 3.4x faster |
+| OLS + robust SE, n=100k | statsmodels 16.05ms | **9.08ms** | 1.8x faster |
+| OLS + robust SE, n=10k **p=25** | statsmodels **10.51ms** | 14.40ms | **1.37x slower** |
+| Weighted estimate, like for like | statsmodels 361µs | **160µs** | 2.3x faster |
+| Weighted estimate **as shipped** | statsmodels 1.86ms | 6.60ms | **3.6x slower** |
+| Policy check vs sidecar | OPA 320µs | **5.6µs** | 57x faster |
+| Workflow step | LangGraph 58µs | **0.57µs** | 102x faster |
+
+**Both losses are deliberate and in the public table.** The weighted estimator
+is slower because it fits its propensity model six times instead of once — that
+is what made its confidence intervals correct. The like-for-like row is the same
+estimator without that correction, and there it is faster; a caller who wants
+the speed can have it, knowing what they trade. The OLS loss at 25 covariates is
+a genuine one: LAPACK's blocked linear algebra beats ours and the gap widens
+with the number of covariates. Closing it means a BLAS dependency, which would
+cost the "no system libraries, runs anywhere" property. Recorded, not optimised
+away.
+
+### Earlier speed claims — assumed against measured
 
 | Comparison | Claimed | Measured | Verdict |
 |---|---|---|---|
@@ -236,11 +274,35 @@ also hold observational data — running it through would be the single most
 valuable next piece of evidence.** It is the one thing simulated validation
 structurally cannot give you.
 
+### 5. Eight dependency updates are waiting, and one must not be taken yet
+
+> **Impact.** None are security fixes — the advisory scan is clean. But
+> **`rand` 0.9 → 0.10 would change every seeded random stream**, invalidating
+> the recorded determinism values and requiring every coverage and calibration
+> number in this report to be re-measured.
+
+Sequence it as: **release 0.3.0 on the current pins, then take the updates, then
+re-run the three measurement artifacts** and confirm the numbers still hold. The
+reverse order means publishing figures nobody has re-checked.
+
+`regorus` 0.5 → 0.11 is the other one to take deliberately rather than
+automatically — it is the policy engine, and a jump of six minor versions could
+change how a Rego policy evaluates. The CI action bumps and `criterion` are
+routine and safe whenever.
+
 ### Smaller items
 
 - **Nothing is published yet**, so there is no automated check that a future
   release doesn't break someone's code. That check needs a first published
   version to compare against.
+- **Python has the estimators but not everything.** Front-door identification,
+  instrumental variables, refutation tests and the MCMC samplers are Rust-only.
+  Reachable over HTTP; named in the integration guide so it is not discovered
+  later.
+- **No zero-copy numpy path.** Inputs are Python lists, so a DataFrame column
+  needs `.tolist()`. Not the bottleneck at the sizes this targets — the
+  estimator still beats statsmodels on like-for-like work — but it would be at
+  much larger scale.
 - **Browser support is absent.** Server-side WebAssembly works for the three
   mathematical crates; running in a browser does not work for any of them.
 - **No fuzz testing.** Low risk here — nothing parses untrusted binary input —
