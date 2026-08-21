@@ -408,7 +408,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: causalrust
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The Rust unit tests in `bindings/pyo3` cover the same methods and run in
