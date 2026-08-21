@@ -4,7 +4,7 @@
 //! models, or services using Beta-Binomial inference, and `ToolBeliefSet`
 //! for managing beliefs about multiple tools simultaneously.
 
-use crate::priors::{BetaBinomial, PriorError, PriorResult};
+use crate::priors::{BetaBinomial, PriorResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -142,6 +142,22 @@ impl ToolBeliefSet {
     }
 
     /// Get a reference to a tool's belief.
+    /// How many tools are being tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// Whether any tool is being tracked.
+    ///
+    /// A belief set with nothing in it answers every reliability question with
+    /// "unknown", which is easy to mistake for "fine" — so callers that gate on
+    /// reliability should check this rather than assume registration happened.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
     pub fn get(&self, tool: &str) -> Option<&ToolBelief> {
         self.tools.get(tool)
     }

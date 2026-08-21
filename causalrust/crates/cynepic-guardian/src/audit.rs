@@ -31,9 +31,13 @@ impl AuditTrail {
 
     /// Get all entries (clones the entire Vec — O(n) memory).
     ///
-    /// For large audit trails, prefer [`recent_entries`] or [`iter`].
+    /// For large audit trails, prefer [`Self::recent_entries`] or
+    /// [`Self::with_entries`], neither of which clones the whole trail.
     pub fn entries(&self) -> Vec<AuditEntry> {
-        self.entries.lock().expect("audit trail lock poisoned").clone()
+        self.entries
+            .lock()
+            .expect("audit trail lock poisoned")
+            .clone()
     }
 
     /// Get the most recent `limit` entries (O(limit) memory).
@@ -44,7 +48,8 @@ impl AuditTrail {
 
     /// Apply a closure to audit entries while holding the lock.
     ///
-    /// Prefer this over [`entries`] for large audit trails to avoid full clone.
+    /// Prefer this over [`Self::entries`] for large audit trails: it borrows
+    /// rather than cloning, so cost is independent of trail length.
     pub fn with_entries<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&[AuditEntry]) -> R,
@@ -55,7 +60,10 @@ impl AuditTrail {
 
     /// Get the number of entries.
     pub fn len(&self) -> usize {
-        self.entries.lock().expect("audit trail lock poisoned").len()
+        self.entries
+            .lock()
+            .expect("audit trail lock poisoned")
+            .len()
     }
 
     /// Whether the trail is empty.
@@ -86,11 +94,17 @@ mod tests {
         let trail = AuditTrail::new();
         assert!(trail.is_empty());
 
-        trail.record(AuditEntry::new("action_1", "test_engine", PolicyDecision::Approve));
+        trail.record(AuditEntry::new(
+            "action_1",
+            "test_engine",
+            PolicyDecision::Approve,
+        ));
         trail.record(AuditEntry::new(
             "action_2",
             "test_engine",
-            PolicyDecision::Reject { reason: "denied".into() },
+            PolicyDecision::Reject {
+                reason: "denied".into(),
+            },
         ));
 
         assert_eq!(trail.len(), 2);
@@ -102,7 +116,11 @@ mod tests {
     #[test]
     fn json_export() {
         let trail = AuditTrail::new();
-        trail.record(AuditEntry::new("deploy", "guardian", PolicyDecision::Approve));
+        trail.record(AuditEntry::new(
+            "deploy",
+            "guardian",
+            PolicyDecision::Approve,
+        ));
         let json = trail.to_json().unwrap();
         assert!(json.contains("deploy"));
     }

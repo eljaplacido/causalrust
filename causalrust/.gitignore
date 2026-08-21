@@ -3,3 +3,8 @@
 *.swo
 *~
 .DS_Store
+
+# Python wheel build, from the `python-wheel` CI job and its local equivalent.
+dist/
+.wheel-venv/
+*.whl

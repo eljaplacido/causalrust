@@ -4,23 +4,57 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-license-file.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "PyO3 bindings for cynepic-rs — high-performance CARF/CYNEPIC from Python"
+description = "PyO3 bindings for cynepic-rs — CARF/CYNEPIC decision intelligence from Python"
+
+# Not a crates.io artifact. It is built as a Python wheel by maturin, and
+# publishing it to a Rust registry would offer a `cdylib` nobody can link.
+publish = false
 
 [lib]
 name = "cynepic"
-crate-type = ["cdylib"]
+# `rlib` alongside `cdylib` so `cargo test`, `cargo doc` and `cargo clippy` can
+# build this crate as an ordinary library. With `cdylib` alone the workspace
+# checks cannot see it at all.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# `extension-module` tells PyO3 to leave the CPython symbols unresolved, to be
+# supplied by the interpreter at load time. That is correct when building a
+# wheel and WRONG for `cargo build`, where nothing supplies them.
+#
+# On Linux the linker tolerates the dangling symbols and the build succeeds by
+# accident. On macOS it does not, and the workspace build fails with
+# "Undefined symbols: _PyExc_ValueError, ...". Leaving it on by default is
+# therefore a platform-dependent break, which is why the macOS CI jobs were the
+# only ones failing.
+#
+# Default is off, so `cargo build --workspace` works everywhere. maturin turns
+# it on: `maturin build --features extension-module`.
+default = []
+extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-cynepic-core = { path = "../../crates/cynepic-core" }
-cynepic-guardian = { path = "../../crates/cynepic-guardian", default-features = false }
-cynepic-causal = { path = "../../crates/cynepic-causal" }
-cynepic-bayes = { path = "../../crates/cynepic-bayes" }
-cynepic-router = { path = "../../crates/cynepic-router" }
-cynepic-graph = { path = "../../crates/cynepic-graph" }
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py38"] }
+# `version` alongside `path` on every internal dependency. A path-only
+# dependency is a wildcard, which cargo-deny rejects and `cargo publish` cannot
+# resolve.
+cynepic-core = { path = "../../crates/cynepic-core", version = "0.3.0" }
+cynepic-guardian = { path = "../../crates/cynepic-guardian", version = "0.3.0", default-features = false }
+cynepic-causal = { path = "../../crates/cynepic-causal", version = "0.3.0" }
+cynepic-bayes = { path = "../../crates/cynepic-bayes", version = "0.3.0" }
+cynepic-router = { path = "../../crates/cynepic-router", version = "0.3.0" }
+cynepic-graph = { path = "../../crates/cynepic-graph", version = "0.3.0" }
+
+# 0.24 and 0.25 carry two RUSTSEC advisories: an out-of-bounds read in `nth` /
+# `nth_back` for `PyList`/`PyTuple` iterators (RUSTSEC-2025-0020) and a missing
+# `Sync` bound on `PyCFunction::new_closure` (RUSTSEC-2024-0446). 0.29 is the first release that clears
+# both.
+pyo3 = { version = "0.29", features = ["abi3-py38"] }
+
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+
+[lints]
+workspace = true

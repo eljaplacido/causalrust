@@ -1,0 +1,24 @@
+[package]
+name = "cynepic-testkit"
+description = "Ground-truth data-generating processes and statistical validation harness for the cynepic-rs workspace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# Internal validation infrastructure. Not published — it exists so that the
+# published crates can prove their estimators are correct.
+publish = false
+
+[dependencies]
+cynepic-core = { workspace = true }
+ndarray = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+rand_distr = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

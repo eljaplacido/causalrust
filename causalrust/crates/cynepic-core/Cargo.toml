@@ -1,12 +1,22 @@
 [package]
 name = "cynepic-core"
-description = "Shared types, traits, and contracts for the cynepic-rs decision intelligence workspace"
+description = "Shared types, traits, and special functions for the cynepic-rs decision intelligence workspace"
+readme = "../../README.md"
+keywords = ["decision-intelligence", "cynefin", "traits", "statistics"]
+categories = ["science", "mathematics", "data-structures"]
+documentation = "https://docs.rs/cynepic-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[package.metadata.docs.rs]
+# Document every feature. Without this, docs.rs builds default features only,
+# and an optional surface — `guardian`'s Rego evaluator, for one — is absent
+# from the published documentation with no indication it exists.
+all-features = true
 
 [dependencies]
 serde = { workspace = true }
@@ -18,3 +28,6 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

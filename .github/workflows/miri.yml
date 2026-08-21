@@ -1,0 +1,78 @@
+name: Miri
+
+# Weekly, not per-PR.
+#
+# Miri must rebuild the entire dependency tree under its own interpreter with a
+# nightly toolchain and no shared cache — ndarray, statrs -> nalgebra, regorus,
+# tokio. Scoped to `--lib` it still exceeded 30 minutes in the PR pipeline
+# without finishing, which is why it was moved here.
+#
+# It is also low-yield for this workspace: `unsafe_code = "forbid"` means the
+# undefined behaviour Miri looks for is prevented by construction in our own
+# code. What remains worth checking is a soundness regression in a dependency,
+# and that is a weekly concern rather than a per-commit one.
+#
+# Honest status: as of moving it here, **Miri has never completed a run on this
+# workspace**. A green badge below is the first real evidence; until one
+# appears, treat this job as unproven rather than as passing.
+
+on:
+  schedule:
+    # 04:00 UTC on Sunday. Quiet, and a failure has the week to be noticed
+    # before it matters.
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Packages to check (space-separated -p flags)"
+        required: false
+        default: "-p cynepic-core -p cynepic-causal -p cynepic-bayes"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+defaults:
+  run:
+    working-directory: causalrust
+
+jobs:
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    # Generous, because the cost is a cold nightly rebuild rather than the tests
+    # themselves — those run in 0.15s natively.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      # Keyed separately from the stable pipeline's cache: a nightly toolchain
+      # and Miri's instrumented artifacts share nothing with it, and mixing them
+      # only evicts entries the other job needs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+          key: miri
+
+      - name: Miri (numeric kernels)
+        # `--lib` only. The integration suites are statistical simulations — 300
+        # replications per coverage cell, 600 per SBC run — and under Miri's
+        # ~100x interpreter slowdown they take hours while checking nothing a
+        # unit test does not.
+        #
+        # The unit tests are where the UB-prone code is: the pivoted QR and the
+        # IRLS step index raw `f64` buffers, and the incomplete beta and gamma
+        # routines run tight numeric loops.
+        #
+        # Isolation is disabled because the belief tracker timestamps
+        # observations with `chrono::Utc::now()` and Miri's sandbox blocks
+        # `clock_gettime`. That weakens nothing about the UB checking itself.
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: |
+          cargo miri test --lib ${{ github.event.inputs.packages || '-p cynepic-core -p cynepic-causal -p cynepic-bayes' }}

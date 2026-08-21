@@ -1,12 +1,22 @@
 [package]
 name = "cynepic-router"
-description = "Cynefin-based semantic query router and AI proxy server"
+description = "Cynefin-domain query classification with cost-aware routing, budget tracking, and routing-distribution drift detection"
+readme = "../../README.md"
+keywords = ["cynefin", "routing", "classification", "budget", "drift"]
+categories = ["science", "development-tools"]
+documentation = "https://docs.rs/cynepic-router"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[package.metadata.docs.rs]
+# Document every feature. Without this, docs.rs builds default features only,
+# and an optional surface — `guardian`'s Rego evaluator, for one — is absent
+# from the published documentation with no indication it exists.
+all-features = true
 
 [dependencies]
 cynepic-core = { workspace = true }
@@ -18,4 +28,9 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+# Labelled routing corpus for measured F1.
+cynepic-testkit = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

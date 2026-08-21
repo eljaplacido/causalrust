@@ -4,22 +4,29 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-license-file.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+# A binary, not a library artifact. Publishing it to crates.io would offer an
+# executable nobody can depend on.
+publish = false
 description = "Axum HTTP API server for cynepic-rs — CARF/CYNEPIC decision intelligence endpoints"
 
 [dependencies]
-cynepic-core = { path = "../cynepic-core" }
-cynepic-router = { path = "../cynepic-router" }
-cynepic-causal = { path = "../cynepic-causal" }
-cynepic-bayes = { path = "../cynepic-bayes" }
-cynepic-guardian = { path = "../cynepic-guardian", default-features = false }
-cynepic-graph = { path = "../cynepic-graph" }
+cynepic-core = { path = "../cynepic-core", version = "0.3.0" }
+cynepic-router = { path = "../cynepic-router", version = "0.3.0" }
+cynepic-causal = { path = "../cynepic-causal", version = "0.3.0" }
+cynepic-bayes = { path = "../cynepic-bayes", version = "0.3.0" }
+cynepic-guardian = { path = "../cynepic-guardian", version = "0.3.0", default-features = false }
+cynepic-graph = { path = "../cynepic-graph", version = "0.3.0" }
 axum = "0.8"
 tokio = { workspace = true }
+ndarray = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
 tower-http = { version = "0.6", features = ["cors"] }
+
+[lints]
+workspace = true

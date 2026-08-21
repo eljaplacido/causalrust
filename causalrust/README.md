@@ -14,42 +14,45 @@ Most agent frameworks focus on LLM orchestration. cynepic-rs provides the **miss
 - **Calibrated uncertainty** — Bayesian beliefs instead of ad-hoc confidence scores
 - **Formal governance** — Rego-compatible policies with append-only audit trails
 - **Type-safe orchestration** — `StateGraph<S>` with compile-time guarantees
-- **Microsecond latency** — Rust-native, embeddable in any service
-- **No panics in library code** — all constructors return `Result`, no crashes from bad input
-
----
+- **Rust-native** — no GC pauses, no Python runtime, embeddable in any service
 
 ## Crates
 
-| Crate | Lines | Tests | What It Does |
-|-------|-------|-------|-------------|
-| **[cynepic-core](crates/cynepic-core)** | ~200 | 8 | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry`, `EpistemicState` |
-| **[cynepic-guardian](crates/cynepic-guardian)** | ~700 | 22 | Policy chains, Rego engine, circuit breaker, loop detection (O(1) VecDeque), rate limiting, HITL escalation, bias auditing, audit trail |
-| **[cynepic-causal](crates/cynepic-causal)** | ~1,400 | 26 | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV/2SLS estimation, 4 refutation tests, counterfactual reasoning |
-| **[cynepic-router](crates/cynepic-router)** | ~500 | 13 | Cynefin keyword classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics |
-| **[cynepic-bayes](crates/cynepic-bayes)** | ~900 | 20 | Beta/Normal/Gamma/Dirichlet priors, MH/Adaptive/Multi-dim MCMC, belief tracker, tool reliability tracking |
-| **[cynepic-graph](crates/cynepic-graph)** | ~700 | 10 | Typed `StateGraph<S>`, conditional edges, cycle detection, per-node timeout, checkpoint/resume, event hooks |
-| **[cynepic-pyo3](bindings/pyo3)** | ~300 | — | Python bindings — `pip install` to accelerate DoWhy/PyMC with Rust |
-| **[cynepic-mcp](bindings/mcp)** | ~280 | — | MCP JSON-RPC stdio server — 8 cognitive tools for AI agents |
-| **[cynepic-server](crates/cynepic-server)** | ~200 | — | Axum HTTP API — 6 REST endpoints, single ~8MB binary |
+| Crate | Description | Tests |
+|-------|-------------|-------|
+| **[cynepic-core](crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry`, `EpistemicState` | 13 |
+| **[cynepic-guardian](crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail | 30 |
+| **[cynepic-causal](crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation, counterfactual reasoning | 30 |
+| **[cynepic-router](crates/cynepic-router)** | Cynefin classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics | 17 |
+| **[cynepic-bayes](crates/cynepic-bayes)** | Beta/Normal/Gamma/Dirichlet priors, MH/Adaptive/Multi-dim MCMC, belief tracking, tool reliability | 20 |
+| **[cynepic-graph](crates/cynepic-graph)** | Typed `StateGraph<S>`, conditional edges, cycle detection, per-node timeout, checkpointing, event hooks | 10 |
 
-**Total: 99 tests, ~7,800 LOC across 9 crates.**
+**Total: 120 unit tests + 2 doctests, ~8,100 LOC across 6 crates.**
 
----
+> **Maturity.** Pre-1.0, not yet published to crates.io. The causal estimators
+> are being hardened — see [docs/roadmap.md](docs/roadmap.md) for the known
+> correctness gaps and the tier that closes each. No performance claims are made
+> until the benchmark suite lands.
 
 ## Quick Start
 
 ```bash
-cd causalrust
-cargo build --workspace              # Build all crates
-cargo test --workspace               # Run all 99 tests
-cargo test -p cynepic-guardian --no-default-features  # Without Rego
-cargo doc --workspace --no-deps      # Generate API docs
+cargo build --workspace
+cargo test --workspace --all-features   # 120 unit tests + 2 doctests
+cargo test -p cynepic-causal            # Single crate
+cargo doc --workspace --no-deps         # Generate API docs
 ```
 
 **Requirements:** Rust 1.85+ (edition 2024)
 
----
+Before opening a PR, run what CI runs:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo deny check all                    # requires: cargo install cargo-deny
+```
 
 ## Architecture
 
@@ -91,7 +94,7 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | **Classify problem complexity** before choosing an approach | `cynepic-router` | Keyword classifier + entropy scoring → Cynefin domain | Domain + confidence + "which engine should handle this?" |
 | **Orchestrate multi-step AI workflows** with safety guarantees | `cynepic-graph` | StateGraph<S> → nodes → conditional edges → execute | Compile-time type safety, per-node timeout, checkpoint/resume |
 | **Monitor for distribution drift** in your AI system over time | `cynepic-router` | DriftDetector → KL-divergence → baseline comparison | Alert when routing patterns shift significantly |
-| **Call from Python** to accelerate DoWhy/PyMC/numpy workflows | `cynepic-pyo3` | `pip install cynepic` → `import cynepic` | 100-1000x speedup on DAG ops, conjugate priors, policy eval |
+| **Call from Python** to accelerate DoWhy/PyMC/numpy workflows | `cynepic-pyo3` | `pip install cynepic` → `import cynepic` | Exact Beta/Gamma quantiles, verified estimators; speedup unmeasured |
 | **Give AI agents decision intelligence** via MCP | `cynepic-mcp` | JSON-RPC stdio → 8 cognitive tools | Agents can classify, estimate ATE, check policy, update beliefs |
 | **Run a lightweight decision API** without Python dependencies | `cynepic-server` | Axum binary → 6 REST endpoints | Single ~8MB binary, no venv, no pip |
 | **Audit AI decisions** for compliance (EU AI Act, SOC2) | `cynepic-guardian` | AuditTrail → `recent_entries()` or `with_entries()` | Immutable append-only log, no-clone access for large trails |
@@ -104,17 +107,74 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 
 ---
 
-## Performance Benchmarks
+## Performance — every measurable row measured
 
-| Operation | Python Equivalent | cynepic-rs | Speedup |
-|-----------|------------------|------------|---------|
-| DAG d-separation | ~10ms (NetworkX) | ~10µs (petgraph) | **~1,000x** |
-| Beta conjugate prior update | ~1ms (PyMC) | <1µs (direct) | **~1,000x** |
-| Policy evaluation | ~1ms (OPA sidecar) | ~10µs (in-process regorus) | **~100x** |
-| Circuit breaker check | ~100µs (Python) | <100ns (atomics) | **~1,000x** |
-| StateGraph step | ~1ms (LangGraph) | <100µs (typed dispatch) | **~10x** |
+| Operation | Python equivalent | cynepic-rs | Speedup | Status |
+|-----------|------------------|------------|---------|--------|
+| DAG d-separation | NetworkX | petgraph | **9–19x** | **measured** |
+| Beta 95% credible interval | scipy (Boost) | `bisect_cdf` | **2.9x** | **measured** |
+| StateGraph step | LangGraph | typed dispatch | **100–191x** | **measured** |
+| Policy evaluation vs sidecar | OPA over HTTP | in-process regorus | **57x** | **measured** |
+| Policy evaluation vs engine | OPA's Go evaluator | regorus | **3.1x** | **measured** |
+| Beta conjugate prior update | PyMC | direct | — | not a fair comparison |
+| Circuit breaker check | Python | atomics | — | not a fair comparison |
 
-*Measurements from empirical comparison against standard Python equivalents. See `benchmarks/` for methodology.*
+The policy row was one number doing two jobs, so it is now two rows. OPA's API
+reports its own `timer_rego_query_eval_ns`, which shows that **94.5% of the
+sidecar round trip is HTTP, JSON and the loopback hop** — not policy evaluation.
+Deleting a sidecar is worth 57x and is a real, useful win; it is not a claim
+about regorus, which is worth 3.1x. The original ~100x conflated them.
+
+The two rows marked **not a fair comparison** are worse than unmeasured. PyMC
+has no conjugate-update primitive to compare against, and a conjugate update is
+two additions; a circuit-breaker check is an atomic load against a Python
+attribute access, and whether the breaker *opens when it should* is the question
+that matters — `cynepic-guardian`'s guardrail tests answer it. They are kept
+here, marked, rather than deleted: erasing them would erase the fact that they
+were ever claimed, and that is the part a reader needs.
+
+Every measured row is worth reading for what measuring did to it.
+D-separation came back **50x below its assumption** — 9–19x, not ~1,000x — and
+the ratio *falls* as the graph grows, so most of the win is Python call overhead
+rather than the algorithm. StateGraph came back **~15x above** its assumption,
+in the opposite direction. The credible interval came back **1.2x slower than
+scipy**, which is how a 200-iteration bisection loop that needed 60 got found;
+it is 2.9x faster now, and the values are bit-identical either way.
+
+Policy evaluation was the one assumption that landed in the right order of
+magnitude — and it did so for almost entirely the wrong reason.
+
+None of these assumptions was dishonest. All were plausible, and being wrong in
+both directions is the tell: they were not conservative or optimistic, they were
+simply uncorrelated with the facts, which is what numbers that have never met an
+instrument look like in aggregate. The two rows still marked "not a fair
+comparison" are kept for the same reason they are marked — so a reader who has
+met the claim elsewhere finds out here that it does not hold up.
+
+Reproduce them with `scripts/compare_networkx.py`, `compare_langgraph.py`,
+`compare_opa.py`, and the `causal_latency`, `bayes_latency`, `graph_latency`
+and `guardian_latency` examples — all on one machine — and see
+[docs/roadmap.md](docs/roadmap.md#benchmarking-what-still-has-to-be-proven) for
+what each remaining row would take to prove.
+
+**Speed is also not the main reason to use this.** For causal inference the
+value is a number you can act on — an interval that covers, an estimator that
+declines when the data cannot support an answer, a result that reproduces from
+a seed. A fast wrong effect estimate is worth less than a slow right one.
+
+What this repository *can* stand behind today, every figure reproducible from a
+seeded command:
+
+- `ols_adjusted` achieves nominal interval coverage on all nine DGP cells
+- `ipw` is nominal on all eight estimable cells, and **refuses** the ninth
+  rather than answering
+- Every conjugate prior's credible interval is calibrated; both MCMC samplers
+  pass simulation-based calibration
+- Identical seeds give identical chains and identical refutation verdicts
+
+See **[docs/FINDINGS.md](docs/FINDINGS.md)** for those, and
+**[docs/roadmap.md#benchmarking](docs/roadmap.md#benchmarking-what-still-has-to-be-proven)**
+for what has to be built before the table above means anything.
 
 ---
 
@@ -428,8 +488,6 @@ assert_eq!(result, 10); // |5|=5 ≤10 → double: 10
 
 ## License
 
-[Business Source License 1.1](../LICENSE)
+[Apache License 2.0](../LICENSE) — free for any use, including commercial and production, with a patent grant.
 
-- **Free** for personal, academic, research, educational, evaluation, and development use
-- **Commercial/production** use requires a paid license — contact eljailari.suhonen@gmail.com
-- **Converts to Apache-2.0** on 2030-03-13 (4-year change date)
+Relicensed from BSL 1.1 on 2026-08-17. See [NOTICE](../NOTICE) for trademark attribution.

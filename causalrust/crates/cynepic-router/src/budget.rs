@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 use crate::config::CostTier;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Tracks routing costs over time for budget enforcement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,7 +156,12 @@ impl BudgetTracker {
     /// Defaults to Free if all tiers would exceed the budget.
     fn suggest_downgrade(&self) -> CostTier {
         let default_cost_map = CostMap::default();
-        let tiers = [CostTier::Free, CostTier::Low, CostTier::Medium, CostTier::High];
+        let tiers = [
+            CostTier::Free,
+            CostTier::Low,
+            CostTier::Medium,
+            CostTier::High,
+        ];
 
         for tier in &tiers {
             let cost = default_cost_map.cost_for(tier);
@@ -196,7 +201,10 @@ mod tests {
         // First High route costs 0.20, which exceeds the 0.10 budget.
         let decision = tracker.record(&CostTier::High, &cost_map);
         match decision {
-            BudgetDecision::OverBudget { overage, suggested_tier } => {
+            BudgetDecision::OverBudget {
+                overage,
+                suggested_tier,
+            } => {
                 assert!((overage - 0.10).abs() < 1e-10);
                 // Should suggest Free since we're already over budget
                 assert_eq!(suggested_tier, CostTier::Free);

@@ -75,16 +75,20 @@ impl BeliefTracker {
     /// Returns an error if the observation type does not match the belief state.
     pub fn observe(&mut self, obs: Observation) -> Result<(), BeliefError> {
         match (&mut self.state, &obs) {
-            (BeliefState::Binary(model), Observation::Binary { successes, failures }) => {
+            (
+                BeliefState::Binary(model),
+                Observation::Binary {
+                    successes,
+                    failures,
+                },
+            ) => {
                 model.update(*successes as u64, *failures as u64);
             }
             (BeliefState::Continuous(model), Observation::Continuous { value }) => {
                 model.update(&[*value]);
             }
             (BeliefState::Count(model), Observation::Count { count, periods }) => {
-                let counts: Vec<u64> = std::iter::repeat(*count as u64)
-                    .take(*periods)
-                    .collect();
+                let counts: Vec<u64> = std::iter::repeat_n(*count as u64, *periods).collect();
                 model.update(&counts);
             }
             (BeliefState::Categorical(model), Observation::Categorical { counts }) => {
@@ -185,8 +189,9 @@ mod tests {
 
     #[test]
     fn batch_continuous_updates() {
-        let mut tracker =
-            BeliefTracker::new(BeliefState::Continuous(NormalNormal::new(0.0, 100.0, 1.0).unwrap()));
+        let mut tracker = BeliefTracker::new(BeliefState::Continuous(
+            NormalNormal::new(0.0, 100.0, 1.0).unwrap(),
+        ));
 
         let observations = vec![
             Observation::Continuous { value: 5.0 },

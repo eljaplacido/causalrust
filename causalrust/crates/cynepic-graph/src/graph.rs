@@ -9,12 +9,36 @@ use std::sync::Arc;
 ///
 /// `S` is the state type that flows through the graph. Each node
 /// receives the current state and returns the modified state.
+/// A router that inspects the current state and names the next node to run.
+pub type EdgeRouter<S> = Arc<dyn Fn(&S) -> NodeId + Send + Sync>;
+
 pub struct StateGraph<S: Send + Sync + 'static> {
     nodes: HashMap<NodeId, Arc<dyn Node<S>>>,
     edges: HashMap<NodeId, Vec<NodeId>>,
-    conditional_edges: HashMap<NodeId, Arc<dyn Fn(&S) -> NodeId + Send + Sync>>,
+    conditional_edges: HashMap<NodeId, EdgeRouter<S>>,
     entry_node: Option<NodeId>,
     hooks: Vec<Arc<dyn GraphHook>>,
+}
+
+// Nodes, routers and hooks are all trait objects, so print the graph's shape
+// rather than its contents: which nodes exist, how they connect, and where
+// execution begins. Conditional edges are listed by source only — their target
+// is a closure over runtime state and is not knowable here.
+impl<S: Send + Sync + 'static> std::fmt::Debug for StateGraph<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut nodes: Vec<&NodeId> = self.nodes.keys().collect();
+        nodes.sort();
+        let mut conditional: Vec<&NodeId> = self.conditional_edges.keys().collect();
+        conditional.sort();
+
+        f.debug_struct("StateGraph")
+            .field("entry_node", &self.entry_node)
+            .field("nodes", &nodes)
+            .field("edges", &self.edges)
+            .field("conditional_edges_from", &conditional)
+            .field("hooks", &self.hooks.len())
+            .finish()
+    }
 }
 
 impl<S: Send + Sync + 'static> StateGraph<S> {
@@ -79,10 +103,7 @@ impl<S: Send + Sync + 'static> StateGraph<S> {
     /// - No cycles in fixed edges (cycles through conditional edges may be intentional)
     pub fn validate(&self) -> Result<(), GraphError> {
         // Check entry node is set
-        let entry = self
-            .entry_node
-            .as_ref()
-            .ok_or(GraphError::NoEntryNode)?;
+        let entry = self.entry_node.as_ref().ok_or(GraphError::NoEntryNode)?;
 
         // Check entry node exists
         if !self.nodes.contains_key(entry) {
@@ -109,12 +130,9 @@ impl<S: Send + Sync + 'static> StateGraph<S> {
         // We need to check from all nodes that have fixed edges, not just entry
         for start_node in self.edges.keys() {
             if !visited.contains(start_node) {
-                if let Some(cycle_path) = self.dfs_cycle_check(
-                    start_node,
-                    &mut visited,
-                    &mut in_stack,
-                    &mut path,
-                ) {
+                if let Some(cycle_path) =
+                    self.dfs_cycle_check(start_node, &mut visited, &mut in_stack, &mut path)
+                {
                     return Err(GraphError::CycleDetected { path: cycle_path });
                 }
             }
@@ -139,9 +157,7 @@ impl<S: Send + Sync + 'static> StateGraph<S> {
         if let Some(neighbors) = self.edges.get(node) {
             for next in neighbors {
                 if !visited.contains(next) {
-                    if let Some(cycle) =
-                        self.dfs_cycle_check(next, visited, in_stack, path)
-                    {
+                    if let Some(cycle) = self.dfs_cycle_check(next, visited, in_stack, path) {
                         return Some(cycle);
                     }
                 } else if in_stack.contains(next) {
@@ -167,10 +183,7 @@ impl<S: Send + Sync + 'static> StateGraph<S> {
     pub async fn execute(&self, initial_state: S, max_steps: usize) -> Result<S, GraphError> {
         self.validate()?;
 
-        let entry = self
-            .entry_node
-            .clone()
-            .ok_or(GraphError::NoEntryNode)?;
+        let entry = self.entry_node.clone().ok_or(GraphError::NoEntryNode)?;
 
         let exec_start = std::time::Instant::now();
         let mut current_id = entry;
@@ -263,10 +276,7 @@ impl<S: Send + Sync + 'static> StateGraph<S> {
     ) -> Result<S, GraphError> {
         self.validate()?;
 
-        let entry = self
-            .entry_node
-            .clone()
-            .ok_or(GraphError::NoEntryNode)?;
+        let entry = self.entry_node.clone().ok_or(GraphError::NoEntryNode)?;
 
         let exec_start = std::time::Instant::now();
         let mut current_id = entry;
@@ -521,7 +531,7 @@ mod tests {
     async fn conditional_routing() {
         let check = Arc::new(FnNode::new("check", |x: i32| async move { Ok(x) }));
         let positive = Arc::new(FnNode::new("positive", |x: i32| async move { Ok(x * 10) }));
-        let negative = Arc::new(FnNode::new("negative", |x: i32| async move { Ok(x * -1) }));
+        let negative = Arc::new(FnNode::new("negative", |x: i32| async move { Ok(-x) }));
 
         let graph = StateGraph::new()
             .add_node(check)
@@ -634,7 +644,9 @@ mod tests {
         let events = collector.events();
         assert_eq!(events.len(), 5);
         assert!(matches!(&events[0], GraphEvent::NodeStarted { node, .. } if node.0 == "add_one"));
-        assert!(matches!(&events[1], GraphEvent::NodeCompleted { node, .. } if node.0 == "add_one"));
+        assert!(
+            matches!(&events[1], GraphEvent::NodeCompleted { node, .. } if node.0 == "add_one")
+        );
         assert!(matches!(&events[2], GraphEvent::NodeStarted { node, .. } if node.0 == "double"));
         assert!(matches!(&events[3], GraphEvent::NodeCompleted { node, .. } if node.0 == "double"));
         assert!(matches!(&events[4], GraphEvent::ExecutionCompleted { .. }));
@@ -645,7 +657,8 @@ mod tests {
     async fn checkpoint_serialize_deserialize() {
         use crate::checkpoint::Checkpoint;
 
-        let cp = Checkpoint::with_reason(42i32, NodeId::new("double"), 1, "human_approval_required");
+        let cp =
+            Checkpoint::with_reason(42i32, NodeId::new("double"), 1, "human_approval_required");
 
         let json = cp.to_json().unwrap();
         let restored: Checkpoint<i32> = Checkpoint::from_json(&json).unwrap();

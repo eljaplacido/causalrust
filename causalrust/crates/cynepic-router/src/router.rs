@@ -1,6 +1,6 @@
 use crate::budget::{BudgetDecision, BudgetTracker, CostMap};
 use crate::classifier::{ClassificationResult, ClassifierError, QueryClassifier};
-use crate::config::{RouterConfig, RouteTarget};
+use crate::config::{RouteTarget, RouterConfig};
 use std::sync::Arc;
 
 /// The Cynefin router: classifies queries and returns routing decisions.
@@ -11,6 +11,18 @@ pub struct CynefinRouter {
     budget: Option<BudgetTracker>,
     /// Optional cost map for budget calculations.
     cost_map: Option<CostMap>,
+}
+
+// `QueryClassifier` is a trait object, so record only that one is installed;
+// the routing config and budget state are the parts worth inspecting.
+impl std::fmt::Debug for CynefinRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CynefinRouter")
+            .field("config", &self.config)
+            .field("budget", &self.budget)
+            .field("cost_map", &self.cost_map)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Extended routing decision with cost tracking.
@@ -101,10 +113,7 @@ impl CynefinRouter {
         let target = self.config.routes.get(&effective_domain).cloned();
 
         // Determine cost tier from the target, defaulting to Free.
-        let cost_tier = target
-            .as_ref()
-            .map(|t| t.cost_tier)
-            .unwrap_or_default();
+        let cost_tier = target.as_ref().map(|t| t.cost_tier).unwrap_or_default();
 
         let budget_status = match (&mut self.budget, &self.cost_map) {
             (Some(budget), Some(cost_map)) => {

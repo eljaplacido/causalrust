@@ -27,6 +27,7 @@ pub struct BiasAuditResult {
 }
 
 /// Audits decision distributions for statistical bias.
+#[derive(Debug, Clone)]
 pub struct BiasAuditor {
     /// Significance level for the chi-squared test (e.g., 0.05).
     significance_level: f64,

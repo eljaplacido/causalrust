@@ -10,33 +10,48 @@ Most agent frameworks focus on LLM orchestration. cynepic-rs provides the **miss
 
 - **Causal correctness** — don't just correlate, identify *why* things happen
 - **Calibrated uncertainty** — Bayesian beliefs instead of ad-hoc confidence scores
-- **Formal governance** — Rego/Cedar policies with append-only audit trails
+- **Formal governance** — Rego policies with append-only audit trails
 - **Type-safe orchestration** — `StateGraph<S>` with compile-time guarantees
-- **Microsecond latency** — Rust-native, embeddable in any service
+- **Rust-native** — no GC pauses, no Python runtime, embeddable in any service
 
 ## Crates
 
 | Crate | Description | Tests |
 |-------|-------------|-------|
-| **[cynepic-core](causalrust/crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry` | 8 |
-| **[cynepic-guardian](causalrust/crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, audit trail | 22 |
-| **[cynepic-causal](causalrust/crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation | 26 |
-| **[cynepic-router](causalrust/crates/cynepic-router)** | Cynefin classifier, cost-aware routing, budget tracking, classifier metrics (F1/precision/recall) | 13 |
+| **[cynepic-core](causalrust/crates/cynepic-core)** | `CynefinDomain`, `AnalyticalEngine` trait, `PolicyDecision`, `AuditEntry`, `EpistemicState` | 13 |
+| **[cynepic-guardian](causalrust/crates/cynepic-guardian)** | Policy chains, circuit breaker, loop detection, rate limiting, HITL escalation, bias auditing, audit trail | 30 |
+| **[cynepic-causal](causalrust/crates/cynepic-causal)** | Causal DAG, d-separation, backdoor/front-door criteria, OLS/IPW/IV estimation, refutation, counterfactual reasoning | 30 |
+| **[cynepic-router](causalrust/crates/cynepic-router)** | Cynefin classifier, entropy scoring, cost-aware routing, budget tracking, drift detection, classifier metrics | 17 |
 | **[cynepic-bayes](causalrust/crates/cynepic-bayes)** | Beta/Normal/Gamma/Dirichlet priors, MH/Adaptive/Multi-dim MCMC, belief tracking, tool reliability | 20 |
 | **[cynepic-graph](causalrust/crates/cynepic-graph)** | Typed `StateGraph<S>`, conditional edges, cycle detection, per-node timeout, checkpointing, event hooks | 10 |
 
-**Total: 99 tests, ~6,800 LOC across 6 crates.**
+**Total: 120 unit tests + 2 doctests, ~8,100 LOC across 6 crates.**
+
+> **Maturity.** These crates are pre-1.0 and not yet published to crates.io. The
+> causal estimators in particular are being hardened — see
+> [docs/roadmap.md](causalrust/docs/roadmap.md) for the known correctness gaps
+> and the tier they are fixed in. No performance claims are made here until the
+> benchmark suite lands; there is currently no `benches/` directory.
 
 ## Quick Start
 
 ```bash
 cd causalrust
 cargo build --workspace
-cargo test --workspace             # Run all 99 tests
-cargo doc --workspace --no-deps    # Generate API docs
+cargo test --workspace --all-features   # 120 unit tests + 2 doctests
+cargo doc --workspace --no-deps         # Generate API docs
 ```
 
 **Requirements:** Rust 1.85+ (edition 2024)
+
+Before opening a PR, run what CI runs:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo deny check all                    # requires: cargo install cargo-deny
+```
 
 ## Architecture
 
@@ -170,8 +185,30 @@ let result = graph.execute(-5, 10).await.unwrap(); // 10
 
 ## License
 
-[Business Source License 1.1](LICENSE)
+[Apache License 2.0](LICENSE) — free for any use, including commercial and production, with a patent grant.
 
-- **Free** for personal, academic, research, educational, evaluation, and development use
-- **Commercial/production** use requires a paid license — contact eljailari.suhonen@gmail.com
-- **Converts to Apache-2.0** on 2030-03-13 (4-year change date)
+Relicensed from BSL 1.1 on 2026-08-17. The BSL already named Apache-2.0 as its Change License for 2030-03-13; that date was brought forward.
+
+See [NOTICE](NOTICE) for trademark attribution — "CARF" and "CYNEPIC" remain trademarks of Cisuregen, and Apache-2.0 §6 grants no trademark rights.
+
+---
+
+## Contributing
+
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — the workflow, the full local gate,
+  and the findings ratchet.
+- **[docs/FINDINGS.md](causalrust/docs/FINDINGS.md)** — every known correctness
+  defect, with the measurement behind it. Start here.
+- **[SECURITY.md](SECURITY.md)** — report vulnerabilities privately.
+- **[CHANGELOG.md](CHANGELOG.md)** — what changed and what it measured.
+- **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)**
+
+The one thing worth knowing before you start: **a claim without a measurement is
+not a claim.** Statistical changes need a coverage or calibration number, not a
+unit test with a generous tolerance. That standard exists because thirty passing
+unit tests once coexisted with an estimator at 0.0% interval coverage.
+
+## Licence
+
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) — Apache-2.0 grants no trademark
+rights, and the CARF/CYNEPIC marks are reserved.

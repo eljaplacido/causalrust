@@ -9,6 +9,7 @@ use crate::policy::{GuardianError, PolicyEvaluator};
 /// Risk scores are expected in the context JSON. This bridges Bayesian uncertainty
 /// (from cynepic-bayes) with policy decisions: agents compute a risk score
 /// (e.g., posterior probability of failure), and this evaluator enforces thresholds.
+#[derive(Debug, Clone)]
 pub struct RiskAwareEvaluator {
     /// JSON path to the risk score in the context (e.g., "risk_score" or "reliability").
     risk_field: String,
@@ -98,8 +99,8 @@ mod tests {
     fn make_evaluator() -> RiskAwareEvaluator {
         RiskAwareEvaluator::new(
             "risk_score",
-            0.5,  // escalate threshold
-            0.8,  // reject threshold
+            0.5, // escalate threshold
+            0.8, // reject threshold
             EscalationTarget::Slack {
                 channel: "#risk-review".into(),
             },

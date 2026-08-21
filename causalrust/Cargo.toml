@@ -7,17 +7,22 @@ members = [
     "crates/cynepic-causal",
     "crates/cynepic-bayes",
     "crates/cynepic-graph",
+    "crates/cynepic-testkit",
     "crates/cynepic-server",
     "bindings/pyo3",
     "bindings/mcp",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Elja Placido"]
-license = "BSL-1.1"
-license-file = "../LICENSE"
+# Apache-2.0, adopted 2026-08-17. The prior BSL 1.1 already named the Apache
+# License 2.0 as its Change License with a Change Date of 2030-03-13; this
+# simply brings that date forward. Trademarks are unaffected — Apache-2.0 §6
+# grants no trademark rights, so the CARF/CYNEPIC marks noted in NOTICE are
+# untouched by this change.
+license = "Apache-2.0"
 repository = "https://github.com/eljaplacido/causalrust"
 rust-version = "1.85"
 
@@ -33,10 +38,23 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 
 # cynepic-core (re-exported by all crates)
-cynepic-core = { path = "crates/cynepic-core" }
+#
+# `version` is REQUIRED alongside `path`. A path-only dependency cannot be
+# published: `cargo publish` rejects it, and cargo-deny reports it as a wildcard.
+# Keep the version in step with workspace.package.version on every release.
+cynepic-core = { path = "crates/cynepic-core", version = "0.3.0" }
+
+# Internal validation harness: ground-truth DGPs and the coverage machinery.
+# `publish = false`, and used only as a dev-dependency, so it never appears in a
+# consumer's dependency tree. No `version` key for exactly that reason.
+cynepic-testkit = { path = "crates/cynepic-testkit" }
 
 # cynepic-guardian
-regorus = "0.5"
+# Pinned to an exact minor: regorus 0.5 parses Rego v1 by default, and the
+# guardian's policy dialect is part of its public contract (see
+# `RegoPolicyEvaluator::from_policy`). A minor bump that changes the default
+# dialect must be an explicit, tested upgrade.
+regorus = "~0.5"
 
 # cynepic-causal
 petgraph = "0.7"
@@ -44,8 +62,13 @@ ndarray = "0.16"
 
 # cynepic-bayes
 statrs = "0.18"
-rand = "0.9"
+# >= 0.9.3 required by RUSTSEC-2026-0097: unsound reseeding when a custom
+# `log` logger reaches back into the thread-local generator.
+rand = "0.9.3"
 rand_distr = "0.5"
+# Reproducible, statistically sound RNG. Replaces the hand-rolled LCG in
+# refute.rs (finding C8) and seeds every simulation in cynepic-testkit.
+rand_chacha = "0.9"
 
 # Planned (v0.3+) — uncomment when needed
 # axum = "0.8"
@@ -54,3 +77,49 @@ rand_distr = "0.5"
 
 # Testing
 approx = "0.5"
+# Benchmarking. `default-features = false` drops the `plotters` HTML report and
+# its transitive image stack, which we do not use and which dominates the
+# dev-dependency build time.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# ---------------------------------------------------------------------------
+# Workspace lint policy
+#
+# Every crate opts in with `[lints] workspace = true`. This is where CLAUDE.md's
+# stated conventions ("no unsafe", "no unwrap in lib code", "library code
+# returns Result") stop being conventions and become build failures.
+#
+# Lints listed as `allow` below are ACTIVE DEBT, not settled policy. Each names
+# the tier of docs/roadmap work that clears it and the measured violation count
+# at the time of writing (2026-08-16). Flipping one to "deny" should be a
+# one-word change once its tier lands.
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+# DEBT — 86 violations (51 struct fields, 19 modules, 14 variants, 2 items).
+# Deferred to Tier 1: the causal crate accounts for most of them and its public
+# surface is being rewritten, so documenting fields now would document fields
+# that are about to be deleted. Flip to "deny" with the Tier 1 API.
+missing_docs = "allow"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# Silent-wrong-answer guards that cost nothing today.
+lossy_float_literal = "deny"
+mem_forget = "deny"
+
+# DEBT — the panic-freedom set. Measured violations:
+#   indexing_slicing  104   unwrap_used  7   expect_used  4   panic  0
+# These are exactly finding C1/C10 from the hardening plan: the estimator code
+# indexes raw f64 buffers and asserts on caller input. Tier 1 replaces that code
+# with checked access and Result-returning APIs; these flip to "deny" with it.
+indexing_slicing = "allow"
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
+float_cmp = "allow"

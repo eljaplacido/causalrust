@@ -1,0 +1,17 @@
+# Normalize line endings in the repository.
+#
+# The tree was previously committed with CRLF from a Windows checkout, which
+# made every subsequent diff unreadable — a one-line change showed as a
+# whole-file rewrite. Git now stores LF and converts on checkout per platform.
+* text=auto
+
+# Rust, TOML and Markdown are always LF in the working tree too, so `cargo fmt`
+# and the CI lint job agree with a Windows developer's local run.
+*.rs   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Lockfiles and licences are text but must never be munged by merge drivers.
+Cargo.lock text eol=lf merge=binary

@@ -1,12 +1,22 @@
 [package]
 name = "cynepic-graph"
-description = "Typed, compile-time verified stateful agent workflow graphs"
+description = "Typed async workflow graphs with conditional edges, cycle detection, per-node timeouts, checkpoint/resume, and event hooks"
+readme = "../../README.md"
+keywords = ["workflow", "state-machine", "graph", "orchestration", "async"]
+categories = ["asynchronous", "data-structures", "development-tools"]
+documentation = "https://docs.rs/cynepic-graph"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[package.metadata.docs.rs]
+# Document every feature. Without this, docs.rs builds default features only,
+# and an optional surface — `guardian`'s Rego evaluator, for one — is absent
+# from the published documentation with no indication it exists.
+all-features = true
 
 [dependencies]
 cynepic-core = { workspace = true }
@@ -20,3 +30,6 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -100,7 +100,8 @@ impl LoopDetector {
         }
 
         // Collect recent entries into a Vec for indexing
-        let recent: Vec<&str> = self.history
+        let recent: Vec<&str> = self
+            .history
             .iter()
             .rev()
             .take(window_size)
@@ -175,7 +176,11 @@ mod tests {
         let violation = detector.record_visit("X");
         assert!(violation.is_some());
         match violation.unwrap() {
-            LoopViolation::NodeOvervisited { node, visits, limit } => {
+            LoopViolation::NodeOvervisited {
+                node,
+                visits,
+                limit,
+            } => {
                 assert_eq!(node, "X");
                 assert_eq!(visits, 4);
                 assert_eq!(limit, 3);

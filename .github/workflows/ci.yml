@@ -6,63 +6,468 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same ref — a PR that gets three pushes in a
+# minute should not burn three full matrices.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: 1
+  # MSRV, mirrored from workspace.package.rust-version. Keep in sync.
+  MSRV: "1.85"
+
+defaults:
+  run:
+    working-directory: causalrust
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------
+  # Correctness: does it build and pass on every platform we claim to support?
+  # ---------------------------------------------------------------------------
+  test:
+    name: test / ${{ matrix.os }} / ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, "1.85"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust ${{ matrix.rust }}
-        uses: dtolnay/rust-action/setup@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            causalrust/target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('causalrust/Cargo.lock') }}
+          workspaces: causalrust
 
-      - name: Build workspace
-        working-directory: causalrust
-        run: cargo build --workspace
+      - name: Build
+        run: cargo build --workspace --all-features
 
-      - name: Test all crates
-        working-directory: causalrust
+      - name: Test (all features)
+        run: cargo test --workspace --all-features
+
+      - name: Test (default features)
         run: cargo test --workspace
 
-      - name: Test guardian without rego
-        working-directory: causalrust
-        run: cargo test -p cynepic-guardian --no-default-features
+      - name: Test (no default features)
+        run: cargo test --workspace --no-default-features
 
+      - name: Doctests
+        run: cargo test --workspace --all-features --doc
+
+  # ---------------------------------------------------------------------------
+  # Style and lint policy. See [workspace.lints] in Cargo.toml — the `allow`
+  # entries there are tracked debt, not settled policy.
+  # ---------------------------------------------------------------------------
   lint:
+    name: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-action/setup@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy, rustfmt
 
-      - name: Check formatting
-        working-directory: causalrust
-        run: cargo fmt --check
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
 
-      - name: Clippy
-        working-directory: causalrust
-        run: cargo clippy --workspace -- -D warnings
+      - name: Formatting
+        run: cargo fmt --all --check
 
-      - name: Check docs build
-        working-directory: causalrust
-        run: cargo doc --workspace --no-deps
+      - name: Clippy (all targets, all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+      # Benchmarks are built, never timed, in CI. Shared runners have noisy
+      # neighbours and their wall-clock variance swamps the differences worth
+      # detecting, so a timing gate here would produce false alarms until people
+      # stopped reading it. Building them stops them rotting against API
+      # changes, which is the failure that actually happens.
+      - name: Benchmarks compile
+        run: cargo bench --workspace --no-run
+
+      - name: Docs build clean
+        env:
+          RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links"
+        run: cargo doc --workspace --all-features --no-deps
+
+  # ---------------------------------------------------------------------------
+  # Every feature combination must compile. Today only guardian is feature-gated,
+  # but this is the gate that keeps `--no-default-features` from silently rotting
+  # as PyO3/WASM/polars features land.
+  # ---------------------------------------------------------------------------
+  features:
+    name: feature powerset
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: taiki-e/install-action@cargo-hack
+      - name: Check every feature combination
+        run: cargo hack check --workspace --feature-powerset --no-dev-deps
+
+  # ---------------------------------------------------------------------------
+  # The advertised MSRV must actually build. The test matrix pins 1.85 too, but
+  # cargo-msrv verifies the manifest's own claim rather than a hardcoded string.
+  # ---------------------------------------------------------------------------
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      # `cargo-msrv` is deliberately not used. `taiki-e/install-action` has no
+      # `cargo-msrv` tag, and the tool's value here is small: the test matrix
+      # already builds and tests the whole workspace on the declared MSRV, which
+      # is the claim that matters.
+      #
+      # What that matrix does NOT check is that the number in the manifest and
+      # the number in this workflow are the same. When they drift, the matrix
+      # keeps passing while testing a version nobody promised. That is the gap
+      # this job closes, and it needs no third-party action to do it.
+      - name: Manifest rust-version matches the CI matrix
+        run: |
+          declared=$(grep -m1 '^rust-version' Cargo.toml | sed 's/[^0-9.]//g')
+          if [ "$declared" != "$MSRV" ]; then
+            echo "::error::workspace rust-version is $declared but CI pins MSRV=$MSRV"
+            exit 1
+          fi
+          echo "rust-version $declared matches MSRV $MSRV"
+
+      # Every published crate must inherit the workspace MSRV rather than
+      # declaring its own, or a consumer on the declared minimum can still be
+      # broken by one member of the workspace.
+      - name: Every crate inherits the workspace rust-version
+        run: |
+          fail=0
+          for m in crates/*/Cargo.toml bindings/*/Cargo.toml; do
+            if ! grep -q '^rust-version.workspace = true' "$m"; then
+              echo "::error::$m does not inherit rust-version from the workspace"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  # ---------------------------------------------------------------------------
+  # Supply chain: advisories, license compatibility, banned/duplicate crates.
+  # This is also what validates that our own `license` field is a parseable SPDX
+  # expression — a malformed one is rejected by crates.io at publish time.
+  # ---------------------------------------------------------------------------
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: causalrust/Cargo.toml
+          command: check all
+
+  # ---------------------------------------------------------------------------
+  # Coverage. Reported, not yet gated — the floor gets set once Tier 1 lands and
+  # the number stops moving. Ratchet, never lower.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Per-crate summary
+        run: cargo llvm-cov report --summary-only
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: causalrust/lcov.info
+
+  # NOTE: Miri is NOT in this pipeline. It lives in `.github/workflows/miri.yml`
+  # on a weekly schedule.
+  #
+  # Miri must rebuild the entire dependency tree under its own interpreter with
+  # a nightly toolchain and no shared cache — ndarray, statrs -> nalgebra,
+  # regorus, tokio. Scoped to `--lib` it still exceeded 30 minutes without
+  # finishing, so it cannot gate a pull request.
+  #
+  # It is also low-yield here: `unsafe_code = "forbid"` across the workspace, so
+  # the UB Miri looks for is prevented by construction in our own code. Its real
+  # value is catching a soundness regression in a dependency, which is worth a
+  # weekly run and not worth blocking every PR on.
+
+  # ---------------------------------------------------------------------------
+  # WASM reach, guarded from day one so the roadmap's WASM target does not become
+  # a rewrite later.
+  #
+  # Verified working today: wasm32-wasip1 for the three runtime-free crates.
+  #
+  # NOT yet gated, with reasons — each is real work, not an oversight:
+  #   * wasm32-unknown-unknown (browser) fails for every crate:
+  #       - cynepic-core  -> uuid v1 (v4) -> getrandom 0.4, which needs the
+  #         `wasm_js` backend plus a RUSTFLAGS cfg on that target.
+  #       - cynepic-bayes -> statrs -> nalgebra -> rand 0.8 -> getrandom 0.2,
+  #         which needs its `js` feature.
+  #     Fixing both is the Tier 4 browser-WASM task; add the target here then.
+  #   * cynepic-guardian / -graph / -router pull tokio with `features = ["full"]`,
+  #     which does not build for any wasm target. Slimming those feature sets is
+  #     a prerequisite for ever shipping them to wasm.
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: wasm32-wasip1
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - name: Check runtime-free crates on wasm32-wasip1
+        run: |
+          cargo check --target wasm32-wasip1 \
+            -p cynepic-core -p cynepic-causal -p cynepic-bayes
+
+  # ---------------------------------------------------------------------------
+  # Packaging: every crate must be publishable in dependency order. Catches the
+  # class of error that only appears at `cargo publish` time — bad license
+  # expressions, files outside the package root, missing metadata.
+  # ---------------------------------------------------------------------------
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      # Must be `--workspace`, not per-crate: the internal `cynepic-core`
+      # dependency is not on crates.io yet, so packaging a dependent crate on
+      # its own fails with "no matching package found". Workspace mode resolves
+      # members against each other.
+      #
+      # `cynepic-testkit`, `cynepic-server` and the two bindings carry
+      # `publish = false` and are skipped automatically. The testkit is internal
+      # validation machinery; the others are binaries and a Python wheel, none
+      # of which a Rust consumer can depend on.
+      # Only the crates that can actually be published. `--workspace` packages
+      # every member regardless of `publish = false`, which would drag in the
+      # testkit, the two bindings and the server — none of which a Rust consumer
+      # can depend on, and none of which carry a LICENSE because they are not
+      # distributed as crates.
+      #
+      # The list is derived from `cargo metadata` rather than hardcoded, so
+      # adding a crate cannot silently escape this job.
+      - name: Package every publishable crate
+        run: |
+          set -euo pipefail
+          pkgs=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(' '.join('-p '+p['name'] for p in json.load(sys.stdin)['packages'] if p.get('publish') is None))")
+          echo "packaging: $pkgs"
+          # shellcheck disable=SC2086
+          cargo package $pkgs --no-verify
+
+      # A `license-file` pointing outside the package root is silently dropped
+      # from the tarball, which ships a crate with no licence text at all.
+      # Assert the file is actually in each archive rather than trusting the
+      # manifest.
+      - name: Every package ships its licence and notice
+        run: |
+          fail=0
+          shopt -s nullglob
+          archives=(target/package/*.crate)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::no .crate archives were produced"
+            exit 1
+          fi
+          for t in "${archives[@]}"; do
+            for f in LICENSE NOTICE; do
+              if ! tar -tzf "$t" | grep -qE "/$f\$"; then
+                echo "::error::$(basename "$t") contains no $f"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
+  # NOTE: `cargo-semver-checks` is deliberately absent. It compares against a
+  # baseline published on crates.io, and these crates are not published yet — a
+  # job that cannot run is worse than no job. Add it to the release workflow
+  # immediately after the first publish.
+
+  # ---------------------------------------------------------------------------
+  # Correctness debt. The specs in crates/cynepic-causal/tests/findings.rs are
+  # SUPPOSED to fail — each one is an open finding from docs/FINDINGS.md. They
+  # cannot run as ordinary tests without making CI permanently red, and a
+  # permanently red CI is one nobody reads.
+  #
+  # So the ratchet counts them instead, and enforces two things the count alone
+  # would miss: the specs still compile against the current API, and every one
+  # of them still fails. A spec that starts passing is either a fix nobody
+  # claimed or a spec that never witnessed anything, and both must surface.
+  # ---------------------------------------------------------------------------
+  findings:
+    name: findings ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+
+      - name: Findings ratchet
+        run: ./scripts/findings-ratchet.sh
+
+      - name: Estimator coverage table
+        run: cargo run -p cynepic-causal --example coverage_report --release
+          | tee coverage-table.txt
+
+      # Published as an artifact on every run. Coverage is the one number here
+      # that can come back bad, which is exactly why it is worth publishing —
+      # a benchmark you would not publish when it made you look slow is not
+      # evidence of anything.
+      - name: Bayesian calibration table
+        run: cargo run -p cynepic-bayes --example calibration_report --release
+          | tee calibration-table.txt
+
+      - name: Routing accuracy table
+        run: cargo run -p cynepic-router --example classifier_report --release
+          | tee routing-table.txt
+
+      # The refusal rate is the column where this crate differs from the Python
+      # tools it gets compared against, and the difference is not a speedup.
+      - name: Refusal table
+        run: cargo run -p cynepic-causal --example refusal_report --release
+          | tee refusal-table.txt
+
+      # Both tables are published on every run. They are the only numbers in
+      # this repository that can come back bad, which is exactly why they are
+      # worth publishing: a measurement you would suppress when it was
+      # unflattering is not evidence.
+      - name: Upload measurement tables
+        uses: actions/upload-artifact@v4
+        with:
+          name: measured-calibration
+          path: |
+            causalrust/coverage-table.txt
+            causalrust/calibration-table.txt
+            causalrust/routing-table.txt
+            causalrust/refusal-table.txt
+
+  # ---------------------------------------------------------------------------
+  # Single required status check. Branch protection points at this one job, so
+  # adding a job above does not mean editing branch protection settings.
+  # ---------------------------------------------------------------------------
+  python-wheel:
+    name: python wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: causalrust
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The Rust unit tests in `bindings/pyo3` cover the same methods and run in
+      # every job. This one exists for what they structurally cannot reach: the
+      # artifact that actually ships. Between a passing Rust test and a working
+      # `import cynepic` sit module registration, the abi3 build, the class
+      # exports, and the getter/method distinction — which exists only on the
+      # Python side. A `#[getter]` that should have been a method is invisible
+      # to Rust and an AttributeError here; that is a real defect this caught.
+      - name: Build the wheel and exercise it
+        run: |
+          set -euo pipefail
+          python -m venv .wheel-venv
+          . .wheel-venv/bin/activate
+          pip install --quiet maturin pytest
+          # `extension-module` leaves the CPython symbols to be supplied by the
+          # interpreter at load time, which is correct for a wheel and wrong for
+          # `cargo build`. maturin is the only place it should be on.
+          maturin build --release --features extension-module \
+            --manifest-path bindings/pyo3/Cargo.toml --out dist
+          pip install --quiet dist/*.whl
+          # Run from a directory without the source tree so the import resolves
+          # to the installed wheel rather than anything adjacent.
+          cd "$(mktemp -d)"
+          python -c "import cynepic; print('cynepic', cynepic.__version__)"
+          cd - >/dev/null
+          pytest bindings/pyo3/tests -q
+
+  ci-ok:
+    name: CI
+    # This job aggregates results and never checks out the repository, so the
+    # workflow-level `working-directory: causalrust` does not exist here and
+    # bash cannot start in it. Overridden to the workspace root.
+    #
+    # The failure mode is worth remembering: every other job went green and this
+    # one still failed, which blocks the merge while pointing at nothing. It had
+    # been failing on every run since the gate was written.
+    defaults:
+      run:
+        working-directory: .
+    if: always()
+    needs:
+      - test
+      - lint
+      - features
+      - msrv
+      - supply-chain
+      - coverage
+      - wasm
+      - package
+      - findings
+      - python-wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any dependency failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "One or more CI jobs failed."
+          exit 1
+      - name: All green
+        run: echo "All CI jobs passed."

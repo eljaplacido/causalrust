@@ -10,8 +10,10 @@ mod domain;
 mod engine;
 mod error;
 mod policy;
+pub mod special;
 
 pub use domain::CynefinDomain;
 pub use engine::AnalyticalEngine;
 pub use error::CynepicError;
 pub use policy::{AuditEntry, EscalationTarget, PolicyDecision};
+pub use special::{beta_cdf, beta_quantile, gamma_cdf, gamma_quantile, ln_gamma, t_quantile};

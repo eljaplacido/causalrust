@@ -1,12 +1,22 @@
 [package]
 name = "cynepic-guardian"
-description = "AI policy guardrails: Rego + Cedar policy evaluation, circuit-breaker, and audit trail"
+description = "Policy guardrails for AI systems: Rego evaluation, circuit breaker, rate limiting, loop detection, HITL escalation, and an append-only audit trail"
+readme = "../../README.md"
+keywords = ["policy", "guardrails", "circuit-breaker", "rate-limiting", "audit"]
+categories = ["development-tools", "asynchronous"]
+documentation = "https://docs.rs/cynepic-guardian"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[package.metadata.docs.rs]
+# Document every feature. Without this, docs.rs builds default features only,
+# and an optional surface — `guardian`'s Rego evaluator, for one — is absent
+# from the published documentation with no indication it exists.
+all-features = true
 
 [dependencies]
 cynepic-core = { workspace = true }
@@ -26,3 +36,6 @@ rego = ["dep:regorus"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
