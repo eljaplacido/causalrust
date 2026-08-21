@@ -54,7 +54,7 @@ cynepic-testkit = { path = "crates/cynepic-testkit" }
 # guardian's policy dialect is part of its public contract (see
 # `RegoPolicyEvaluator::from_policy`). A minor bump that changes the default
 # dialect must be an explicit, tested upgrade.
-regorus = "~0.5"
+regorus = "~0.11"
 
 # cynepic-causal
 petgraph = "0.7"
