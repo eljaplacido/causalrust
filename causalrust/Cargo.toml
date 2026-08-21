@@ -64,7 +64,7 @@ ndarray = "0.16"
 statrs = "0.18"
 # >= 0.9.3 required by RUSTSEC-2026-0097: unsound reseeding when a custom
 # `log` logger reaches back into the thread-local generator.
-rand = "0.9.3"
+rand = "0.10.0"
 rand_distr = "0.5"
 # Reproducible, statistically sound RNG. Replaces the hand-rolled LCG in
 # refute.rs (finding C8) and seeds every simulation in cynepic-testkit.
