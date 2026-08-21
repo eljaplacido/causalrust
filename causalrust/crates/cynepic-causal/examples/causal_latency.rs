@@ -231,6 +231,18 @@ fn main() {
             PropensityScoreEstimator::ipw(&d.treatment, &d.outcome, &d.covariates)
         });
         print_row(&r);
+
+        // The same estimate without cross-fitting, to price the correctness
+        // decision rather than leave it implicit. `ipw` fits the propensity
+        // model out-of-fold where the data supports it (finding C14), which
+        // costs six logistic fits instead of one — and that is most of the gap
+        // against statsmodels, which does one.
+        let r = measure(&format!("  in-sample propensity, n={n}"), iters, || {
+            PropensityScoreEstimator::fit_propensity(&d.treatment, &d.covariates).and_then(|m| {
+                PropensityScoreEstimator::ipw_with_model(&d.treatment, &d.outcome, &m)
+            })
+        });
+        print_row(&r);
     }
 
     // ---- graph ----------------------------------------------------------

@@ -13,6 +13,10 @@
 //! - `run_counterfactual` — Counterfactual reasoning
 //! - `monitor_drift` — Routing distribution drift check
 
+use cynepic_core::{AuditEntry, CynefinDomain, PolicyDecision};
+use cynepic_guardian::audit::AuditTrail;
+use cynepic_router::LexicalClassifier;
+use cynepic_router::drift::DriftDetector;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
@@ -44,6 +48,25 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i32,
     message: String,
+}
+
+/// Every tool call this process has served.
+///
+/// # Why a tool server keeps one
+///
+/// `audit_trail` was advertised in the manifest and had no implementation — a
+/// client that listed the tools and called that one got `Unknown tool`. Rather
+/// than delete the tool, it is implemented, because "show me every decision
+/// this agent made and why" is the question an agentic deployment is most often
+/// asked and least often able to answer.
+///
+/// Append-only and in-memory: the trail lives as long as the process, which for
+/// a stdio MCP server is exactly one client session. A deployment that needs
+/// durability should record `AuditEntry` values to its own store — they are
+/// `Serialize`.
+fn audit() -> &'static AuditTrail {
+    static TRAIL: std::sync::OnceLock<AuditTrail> = std::sync::OnceLock::new();
+    TRAIL.get_or_init(AuditTrail::new)
 }
 
 struct McpServer;
@@ -165,13 +188,27 @@ impl McpServer {
 
         match name {
             "classify_domain" => {
-                use cynepic_router::classifier::{KeywordClassifier, QueryClassifier};
+                // The lexical classifier, not the keyword one. Cross-validated
+                // macro F1 0.656 against 0.290, and 0.625 recall on urgent
+                // "production is on fire" queries against 0.000 — which is the
+                // class where a wrong route costs the most. It still abstains
+                // when it cannot read the query, so the escalation contract is
+                // unchanged.
                 let query = args["query"].as_str().unwrap_or("");
-                let result = KeywordClassifier::default_patterns()
-                    .classify(query)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let classifier =
+                    LexicalClassifier::with_default_exemplars().map_err(|e| e.to_string())?;
+                let result = classifier.classify_sync(query);
+                let why: Vec<String> = classifier
+                    .explain(query, 4)
+                    .into_iter()
+                    .map(|(term, _)| term)
+                    .collect();
                 Ok(json!({
+                    // The terms that drove the verdict. An agent that routes on
+                    // this can show its reasoning, and a reviewer can check
+                    // whether it is sensible — which an embedding model gives
+                    // up and a keyword list never had to earn.
+                    "why": why,
                     "domain": format!("{:?}", result.domain),
                     "confidence": result.confidence,
                     // The signal an agent should escalate on. High entropy
@@ -280,11 +317,77 @@ impl McpServer {
                     ],
                 }))
             }
-            "monitor_drift" => Ok(json!({
-                "status": "not_implemented",
-                "detail": "drift monitoring needs a routing history to compare against; \
-                           wire cynepic_router::drift::DriftDetector to a persisted baseline",
-            })),
+            "audit_trail" => {
+                let limit = args["limit"].as_u64().unwrap_or(50);
+                let limit = usize::try_from(limit).unwrap_or(50).clamp(1, 1_000);
+                let entries = audit().recent_entries(limit);
+                Ok(json!({
+                    "total": audit().len(),
+                    "returned": entries.len(),
+                    "entries": entries,
+                }))
+            }
+            "monitor_drift" => {
+                // Compare an observed routing distribution against a reference.
+                // Both are supplied by the caller, because a stdio tool server
+                // has nowhere durable to keep a baseline — and inventing one
+                // silently would be worse than asking for it.
+                let threshold = args["threshold"].as_f64().unwrap_or(0.15);
+                let domains = [
+                    CynefinDomain::Clear,
+                    CynefinDomain::Complicated,
+                    CynefinDomain::Complex,
+                    CynefinDomain::Chaotic,
+                ];
+                let counts = |key: &str| -> Result<Vec<f64>, String> {
+                    let raw = args[key].as_array().ok_or_else(|| {
+                        format!(
+                            "{key} must be an array of four counts, \
+                             ordered Clear, Complicated, Complex, Chaotic"
+                        )
+                    })?;
+                    if raw.len() != domains.len() {
+                        return Err(format!(
+                            "{key} must have {} entries, got {}",
+                            domains.len(),
+                            raw.len()
+                        ));
+                    }
+                    raw.iter()
+                        .map(|v| v.as_f64().ok_or_else(|| format!("{key} must be numbers")))
+                        .collect()
+                };
+                let baseline = counts("baseline")?;
+                let current = counts("current")?;
+                let total: f64 = baseline.iter().sum();
+                if total <= 0.0 {
+                    return Err("baseline counts sum to zero; nothing to compare against".into());
+                }
+
+                let mut detector = DriftDetector::new(threshold);
+                let reference: std::collections::HashMap<CynefinDomain, f64> = domains
+                    .iter()
+                    .zip(baseline.iter())
+                    .map(|(d, c)| (*d, c / total))
+                    .collect();
+                detector.set_reference(reference);
+                for (domain, count) in domains.iter().zip(current.iter()) {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    for _ in 0..(count.max(0.0) as u64) {
+                        detector.record(*domain);
+                    }
+                }
+                let report = detector.check();
+                Ok(json!({
+                    "drift_detected": report.drift_detected,
+                    // KL divergence in bits, from the baseline to what was
+                    // observed. Reported alongside the verdict so a caller can
+                    // set their own threshold rather than inherit this one.
+                    "kl_divergence": report.kl_divergence,
+                    "threshold": threshold,
+                    "observations": report.total_observations,
+                }))
+            }
             _ => Err(format!("Unknown tool: {name}")),
         }
     }
@@ -326,7 +429,27 @@ impl McpServer {
         // creates a temporary that is dropped at the end of the statement.
         let empty = json!({});
         let arguments = params.get("arguments").unwrap_or(&empty);
-        match Self::call_tool(name, arguments).await {
+        let outcome = Self::call_tool(name, arguments).await;
+
+        // Record every call, including the ones that failed — an audit trail
+        // that only holds successes answers the wrong question. `audit_trail`
+        // is excluded so that reading the log does not extend it, which would
+        // make a second read differ from the first for no reason a caller
+        // could explain.
+        if name != "audit_trail" {
+            let decision = match &outcome {
+                Ok(_) => PolicyDecision::Approve,
+                Err(reason) => PolicyDecision::Reject {
+                    reason: reason.clone(),
+                },
+            };
+            audit().record(
+                AuditEntry::new(name.to_string(), "cynepic-mcp".to_string(), decision)
+                    .with_metadata(arguments.clone()),
+            );
+        }
+
+        match outcome {
             Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0".into(),
                 id,
@@ -518,6 +641,136 @@ mod tests {
                 "tool '{name}' has no object input schema"
             );
         }
+    }
+
+    /// Every advertised tool must actually be callable.
+    ///
+    /// # The defect this exists for
+    ///
+    /// `audit_trail` was listed in the manifest with a description and a schema
+    /// and had no implementation. A client that did the obvious thing — list
+    /// the tools, call one — got `Unknown tool: audit_trail`.
+    ///
+    /// The existing manifest test could not catch it: checking that each tool
+    /// has a name, a description and a schema checks the *advertisement*, and
+    /// the advertisement was fine. Only calling them finds a tool that does not
+    /// exist behind it.
+    ///
+    /// Deliberately not asserting success — several tools legitimately reject
+    /// the empty argument set. What is asserted is that none of them is
+    /// *unknown*, which is the difference between "you called it wrong" and
+    /// "this does not exist".
+    #[tokio::test]
+    async fn every_advertised_tool_is_actually_callable() {
+        for name in advertised_tools() {
+            let response = McpServer::handle_request(&request(
+                "tools/call",
+                Some(json!({"name": name, "arguments": {}})),
+            ))
+            .await;
+            if let Some(e) = response.error {
+                assert!(
+                    !e.message.starts_with("Unknown tool"),
+                    "'{name}' is advertised in the manifest but not implemented"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_audit_trail_records_calls_including_failures() {
+        // The trail is process-global and the test harness is concurrent, so
+        // exact counts race against whatever else is running. Assert on
+        // *content* instead, which is what the feature actually promises.
+        let marker = "estimate_ate";
+        let _ = McpServer::handle_request(&request(
+            "tools/call",
+            Some(json!({"name": marker, "arguments": {}})),
+        ))
+        .await;
+
+        let entries = audit().entries();
+        assert!(
+            entries.iter().any(|e| e.action == marker),
+            "a failed call must still be recorded; an audit trail that only \
+             holds successes answers the wrong question"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e.decision, PolicyDecision::Reject { .. })),
+            "the failure must be recorded as a failure, not flattened to a success"
+        );
+
+        // Reading the log must not extend it, or a second read differs from the
+        // first for no reason a caller could explain.
+        let _ = McpServer::handle_request(&request(
+            "tools/call",
+            Some(json!({"name": "audit_trail", "arguments": {}})),
+        ))
+        .await;
+        assert!(
+            !audit().entries().iter().any(|e| e.action == "audit_trail"),
+            "reading the trail wrote to it"
+        );
+    }
+
+    #[tokio::test]
+    async fn classification_reaches_an_incident_and_says_why() {
+        // The keyword classifier abstained on this: it contains none of
+        // "emergency", "crisis", "outage", "urgent". Routing it as unknown is
+        // the failure the Cynefin split exists to prevent.
+        let r = McpServer::call_tool(
+            "classify_domain",
+            &json!({"query": "the pipeline is corrupting rows right now"}),
+        )
+        .await
+        .expect("well-formed query");
+        assert_eq!(r["domain"], "Chaotic", "{r}");
+        assert!(
+            r["why"].as_array().is_some_and(|w| !w.is_empty()),
+            "a routing decision an agent acts on must be explainable: {r}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drift_monitoring_compares_two_distributions() {
+        let r = McpServer::call_tool(
+            "monitor_drift",
+            &json!({"baseline": [10, 10, 10, 10], "current": [40, 5, 3, 2]}),
+        )
+        .await
+        .expect("well-formed counts");
+        assert_eq!(r["drift_detected"], true, "{r}");
+        assert!(r["kl_divergence"].as_f64().is_some_and(|d| d > 0.0), "{r}");
+
+        // Same distribution, no drift — the control, without which the above
+        // would pass for a detector that always says yes.
+        let quiet = McpServer::call_tool(
+            "monitor_drift",
+            &json!({"baseline": [10, 10, 10, 10], "current": [20, 20, 20, 20]}),
+        )
+        .await
+        .expect("well-formed counts");
+        assert_eq!(quiet["drift_detected"], false, "{quiet}");
+    }
+
+    #[tokio::test]
+    async fn malformed_drift_input_is_reported_not_defaulted() {
+        assert!(
+            McpServer::call_tool("monitor_drift", &json!({}))
+                .await
+                .is_err()
+        );
+        assert!(
+            McpServer::call_tool(
+                "monitor_drift",
+                &json!({"baseline": [1, 2], "current": [1, 2, 3, 4]})
+            )
+            .await
+            .is_err(),
+            "a baseline of the wrong length must be reported, not padded"
+        );
     }
 
     #[tokio::test]

@@ -6,6 +6,32 @@ with the pre-1.0 caveat that minor versions may break the API.
 
 ## [Unreleased]
 
+### Added
+
+- **Causal estimation from Python.** `estimate_ate`, `estimate_ate_weighted`
+  and `estimate_att`, returning a `CausalEffect` that carries its estimand,
+  population, standard-error kind, interval and weighting diagnostics — the
+  flagship capability was previously Rust-only.
+- **`statsmodels` comparison** (`scripts/compare_statsmodels.py`) — the speed
+  question a data scientist actually asks. Faster on seven of nine tasks;
+  the two losses are in the table.
+- **Router latency benchmark** (`examples/router_latency`) — the routing path
+  had never been timed.
+- **`audit_trail` and `monitor_drift` implemented** in the MCP server. Both were
+  advertised in the manifest; `audit_trail` returned "Unknown tool".
+
+### Fixed
+
+- **`cynepic-router::drift` was never declared as a module.** The file existed,
+  the feature was advertised in the crate docs and the MCP manifest, and none of
+  it compiled — including four tests that had never run.
+- **The MCP server classified with the weak keyword classifier.** Now uses
+  `LexicalClassifier`, and returns the terms behind each verdict.
+- **`docs/integration.md` documented a Python API that does not exist.**
+  `from cynepic import BackdoorCriterion, PolicyChain` was an ImportError.
+  Rewritten around the four real surfaces, with every example executed.
+
+
 ## [0.3.0] — 2026-08-20
 
 The theme of this release is that the claims became **measurable**, and then

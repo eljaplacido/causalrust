@@ -249,8 +249,12 @@ The property no Python equivalent has, and the one most worth advertising.
       solution is the documented behaviour for an underdetermined system — but
       it is wrong for a causal estimate.
 
-- [ ] Extend to a DoWhy/statsmodels comparison once those are pinned in the
-      fixture generator
+- [x] **statsmodels comparison built** — `scripts/compare_statsmodels.py`,
+      pinned and committed. Results in the throughput section below, including
+      the two rows where this crate loses.
+- [ ] Extend to a DoWhy comparison. DoWhy wraps statsmodels for estimation, so
+      the marginal information is mostly about its identification layer rather
+      than its arithmetic.
 
 ### 4. Reproducibility
 
@@ -495,7 +499,52 @@ Still outstanding:
       advertising, and at 500 nodes the trend line is already pointing at one.
 - [ ] Run on a quiet machine with the CPU recorded, never on a shared CI runner
 
-#### Are the remaining rows even well-posed questions?
+#### The comparison a data scientist actually weighs
+
+NetworkX and LangGraph answer "is the Rust faster". `statsmodels` answers "is it
+faster than the thing I already have open", which is harder — statsmodels' OLS
+is LAPACK underneath, and LAPACK is not slow. Measured on one machine
+(`scripts/compare_statsmodels.py` against `examples/causal_latency`):
+
+| task | statsmodels | cynepic-causal | |
+|---|---|---|---|
+| Welch difference, n=1k | 179.8µs | **2.6µs** | 69x faster |
+| Welch difference, n=100k | 875.6µs | **256.7µs** | 3.4x faster |
+| OLS + HC1, n=1k p=3 | 135.7µs | **46.6µs** | 2.9x faster |
+| OLS + HC1, n=10k p=3 | 1.58ms | **488.7µs** | 3.2x faster |
+| OLS + HC1, n=100k p=3 | 16.05ms | **9.08ms** | 1.8x faster |
+| **OLS + HC1, n=10k p=25** | **10.51ms** | 14.40ms | **1.37x SLOWER** |
+| IPW, in-sample propensity, n=1k | 361.2µs | **160.0µs** | 2.3x faster |
+| IPW, in-sample propensity, n=10k | 1.86ms | **1.64ms** | 1.13x faster |
+| **IPW as shipped, n=10k** | 1.86ms | 6.60ms | **3.6x SLOWER** |
+
+Two rows lose, and both are worth understanding rather than hiding.
+
+**IPW as shipped is slower because it does strictly more work.** `ipw`
+cross-fits the propensity model where the data supports it — six logistic fits
+instead of one — which is what took interval coverage from 90.3% to 92.3%
+(finding C14). statsmodels does not do this at all. Priced explicitly: the
+in-sample rows above are the same estimator without that correction, and there
+the crate is faster. **A caller who wants the speed can have it** via
+`fit_propensity` + `ipw_with_model`, and should know they are trading away the
+coverage fix to get it.
+
+**OLS at p = 25 is genuinely slower**, and this one is not a trade. Both sides
+run Householder QR at O(n·p²); LAPACK's is blocked and hand-vectorised and ours
+is straightforward. The gap widens with `p`, so the honest guidance is that this
+crate's advantage is in *low-dimensional, high-volume* estimation — many small
+estimates rather than one wide one. Closing it means blocked QR or a BLAS
+dependency, and a BLAS dependency would cost the "no system libraries, builds
+for WASM" property that the rest of the design is organised around. Recorded as
+a loss rather than optimised away.
+
+The Welch row is the shape of the whole comparison in miniature: at n=1k the
+Python side is 98% interpreter overhead, so the ratio is enormous and nearly
+meaningless; at n=100k both sides are doing arithmetic and it falls to 3.4x.
+**Quote the large-n ratios.** The small-n ones flatter us for a reason that has
+nothing to do with this code.
+
+### Are the remaining rows even well-posed questions?
 
 Before measuring the other three, each was checked for whether a fair comparison
 exists. Two do not, and manufacturing a number for those would be worse than

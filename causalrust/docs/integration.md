@@ -1,291 +1,398 @@
-# Integration & Interoperability Guide — cynepic-rs
+# Integration guide
 
-## Design Principle
+How to call cynepic-rs from the place you actually work, and why you would.
 
-Every cynepic crate is **library-first**: no side effects on import, no global state, all types are `Serialize + Deserialize`. This makes each crate consumable as:
-
-1. **Rust library** — `cargo add cynepic-causal`
-2. **Python extension** — via PyO3/maturin
-3. **HTTP API** — via cynepic-server (Axum)
-4. **MCP tool** — via cynepic-mcp (JSON-RPC stdio)
-5. **WASM module** — for browser/edge compute
-6. **CLI tool** — thin binary wrapping library calls
+Every example here has been run. Where an API does not exist yet, this document
+says so rather than showing you what it might look like.
 
 ---
 
-## Python Ecosystem Integration
+## Which surface do you want?
 
-### PyO3 Binding Strategy
+| You are | Use | Because |
+|---|---|---|
+| Building an **AI agent** | [MCP tool server](#mcp--tools-for-an-ai-agent) | The agent calls these as tools and gets back reasons, not just answers |
+| Running an **MLOps platform** | [HTTP API](#http--a-service-your-platform-calls) | Language-agnostic, one deployment, no per-service dependency |
+| Doing **data science / analysis** | [Python](#python--for-analysis-and-notebooks) | `pip install`, then it is a function call |
+| Writing **Rust** | [The crates directly](#rust--embedded-in-your-service) | No serialisation, no process boundary |
 
-Each crate gets a `#[pymodule]` when the `pyo3` feature is enabled. The `cynepic-py` package unifies them under a single `pip install cynepic` namespace.
+All four call the same code. Pick by where your work already lives.
+
+---
+
+## The one idea worth understanding first
+
+Most of these components will **refuse to answer** rather than return a number
+they cannot support. That is the point of them, and it changes how you integrate.
 
 ```python
-# Target API
-from cynepic import CausalDag, BackdoorCriterion, BetaBinomial, PolicyChain
-
-dag = CausalDag()
-dag.add_variable("X")
-dag.add_variable("Y")
-dag.add_variable("Z")
-dag.add_edge("X", "Y")
-dag.add_edge("Z", "X")
-dag.add_edge("Z", "Y")
-
-adjustment = BackdoorCriterion.find(dag, treatment="X", outcome="Y")
-# Returns: {"Z"}
+>>> cynepic.estimate_ate([1.0, 1.0, 1.0], [1.0, 2.0, 3.0])
+ValueError: treatment arm 'control' is empty (3 treated, 0 control);
+            no contrast is defined
 ```
 
-### Interop with Python ML/Data Libraries
+Given the same shape of input, `numpy.linalg.lstsq` returns `-0.000562` with no
+error and no warning. That reads as *"no effect"*, which is a finding somebody
+might act on. There is no effect to report — the data cannot identify one.
 
-| Python Library | cynepic Crate | Integration Path |
-|---------------|---------------|-----------------|
-| **DoWhy** | cynepic-causal | PyO3 bindings accelerate DAG operations and identification. Use as a fast backend for DoWhy's `CausalModel.identify_effect()`. |
-| **EconML** | cynepic-causal | Share treatment effect estimates via Arrow/IPC. cynepic produces `ATEResult`, EconML consumes for heterogeneous effects. |
-| **PyMC / ArviZ** | cynepic-bayes | Export MCMC samples as numpy arrays (zero-copy via PyO3 numpy). ArviZ `InferenceData` from cynepic samples. |
-| **NumPyro / JAX** | cynepic-bayes | Conjugate prior results as JAX arrays for downstream variational inference. |
-| **Polars (Python)** | cynepic-causal | Zero-copy DataFrame sharing via Arrow IPC between Polars-py and cynepic-causal's Polars backend. |
-| **Pandas** | cynepic-causal | Convert via Arrow: `pandas.DataFrame → pyarrow.Table → cynepic`. Avoids copy overhead. |
-| **LangChain / LangGraph** | cynepic-graph | cynepic-graph as a fast execution backend. Python LangGraph defines the graph; Rust executes it. |
-| **CrewAI / AutoGen** | cynepic-router | CynefinRouter as a tool callable by CrewAI agents for query classification. |
-| **MLflow / W&B** | cynepic-bayes | Log posterior summaries, treatment effects, and audit trails as MLflow metrics/artifacts. |
-| **Prefect / Airflow** | cynepic-graph | cynepic-graph workflows as Prefect tasks. Each node becomes a task in the DAG. |
-| **OPA (Python client)** | cynepic-guardian | Drop-in replacement: `RegoPolicyEvaluator` evaluates the same Rego policies, in-process rather than over a sidecar hop (speedup unmeasured). |
-| **HumanLayer** | cynepic-guardian | Future HITL integration: guardian escalation triggers HumanLayer approval, webhook resumes workflow. |
-| **dbt** | cynepic-causal | Causal DAGs validated against dbt model lineage. Ensure data pipeline matches causal assumptions. |
-
-### numpy Zero-Copy Pattern
-
-```rust
-// In cynepic-py bindings
-#[pyfunction]
-fn difference_in_means<'py>(
-    py: Python<'py>,
-    treatment: PyReadonlyArray1<f64>,
-    outcome: PyReadonlyArray1<f64>,
-) -> PyResult<(f64, f64)> {
-    let t = treatment.as_array();
-    let o = outcome.as_array();
-    let result = LinearATEEstimator::difference_in_means(
-        &t.to_owned(), &o.to_owned()
-    );
-    Ok((result.ate, result.std_error))
-}
-```
+**So: handle the error path.** It is not an edge case, it is the feature. In the
+HTTP API these arrive as `422` with a machine-readable `error` kind; in Python as
+`ValueError`; in MCP as a JSON-RPC error.
 
 ---
 
-## TypeScript / JavaScript Ecosystem
+## MCP — tools for an AI agent
 
-### WASM Compilation
-
-Core crates (core, causal, bayes) can compile to `wasm32-unknown-unknown` since they have no system dependencies.
+A stdio JSON-RPC server. Point any MCP client at the binary.
 
 ```bash
-cd crates/cynepic-bayes
-wasm-pack build --target web
+cargo build --release -p cynepic-mcp
 ```
-
-```typescript
-// Browser usage
-import init, { BetaBinomial } from 'cynepic-bayes';
-await init();
-
-const prior = BetaBinomial.new(1.0, 1.0);
-prior.update(10, 3); // 10 successes, 3 failures
-console.log(prior.mean()); // ~0.786
-```
-
-### Interop with TS/JS Libraries
-
-| JS/TS Library | cynepic Crate | Integration Path |
-|--------------|---------------|-----------------|
-| **LangChain.js** | cynepic-router | WASM classifier as a custom LangChain tool. Or HTTP API via cynepic-server. |
-| **Vercel AI SDK** | cynepic-graph | cynepic-graph as a streaming backend (Axum SSE → Vercel AI SDK `useChat`). |
-| **ModelFusion** | cynepic-router | CynefinRouter as a model selection strategy. |
-| **Rete.js** | cynepic-graph | Visual graph editor (Rete.js) → export JSON → cynepic-graph executes. |
-| **Observable / D3** | cynepic-causal | Export DAGs as JSON adjacency lists for D3 force-directed visualization. |
-| **Apache Arrow JS** | cynepic-causal | Arrow IPC for zero-copy data exchange between JS DataFrames and Rust. |
-| **TensorFlow.js** | cynepic-bayes | WASM belief updates + TFJS model inference in the same browser context. |
-
----
-
-## Java / JVM Ecosystem
-
-### JNI via jni-rs
-
-For Java/Kotlin/Scala integration, cynepic crates expose a C ABI via `#[no_mangle] extern "C"` functions, consumed through JNI.
-
-| JVM Library | cynepic Crate | Integration Path |
-|------------|---------------|-----------------|
-| **Apache Spark** | cynepic-causal | UDF wrapping the cynepic ATE estimator, so partitions are processed in Rust. Speedup unmeasured. |
-| **Apache Flink** | cynepic-graph | cynepic-graph as a Flink ProcessFunction for stateful event processing. |
-| **Kafka Streams** | cynepic-router | Classification as a Kafka Streams transformer. |
-| **Spring Boot** | cynepic-server | HTTP API consumed as a Spring WebClient service. |
-| **OPA Java SDK** | cynepic-guardian | Same Rego policies, Rust-native evaluation via JNI. |
-
----
-
-## MCP (Model Context Protocol) Integration
-
-### Tool Definitions
-
-cynepic-mcp exposes each crate as an MCP tool:
 
 ```json
 {
-  "tools": [
-    {
-      "name": "classify_query",
-      "description": "Classify a query into a Cynefin complexity domain",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string" }
-        },
-        "required": ["query"]
-      }
-    },
-    {
-      "name": "estimate_treatment_effect",
-      "description": "Estimate average treatment effect from observational data",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "treatment": { "type": "array", "items": { "type": "number" } },
-          "outcome": { "type": "array", "items": { "type": "number" } }
-        },
-        "required": ["treatment", "outcome"]
-      }
-    },
-    {
-      "name": "bayesian_update",
-      "description": "Update a Bayesian belief state with new evidence",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "prior_type": { "enum": ["beta_binomial", "normal_normal", "gamma_poisson"] },
-          "prior_params": { "type": "object" },
-          "observations": { "type": "object" }
-        },
-        "required": ["prior_type", "prior_params", "observations"]
-      }
-    },
-    {
-      "name": "evaluate_policy",
-      "description": "Evaluate an action against a Rego policy",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": { "type": "string" },
-          "context": { "type": "object" },
-          "policy": { "type": "string" }
-        },
-        "required": ["action", "context", "policy"]
-      }
-    },
-    {
-      "name": "build_causal_dag",
-      "description": "Build a causal DAG and find adjustment sets",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "variables": { "type": "array", "items": { "type": "string" } },
-          "edges": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
-          "treatment": { "type": "string" },
-          "outcome": { "type": "string" }
-        },
-        "required": ["variables", "edges", "treatment", "outcome"]
-      }
-    }
-  ]
+  "mcpServers": {
+    "cynepic": { "command": "/path/to/target/release/cynepic-mcp" }
+  }
 }
 ```
 
-### Usage with AI Agents
+### The tools
 
+| Tool | What an agent uses it for |
+|---|---|
+| `classify_domain` | "Is this question a lookup, an analysis, an experiment, or an emergency?" — and route accordingly |
+| `estimate_ate` | "Did this change actually cause that outcome?" |
+| `run_counterfactual` | "What would have happened to this specific unit instead?" |
+| `check_policy` | "Am I allowed to do this?" — before acting, not after |
+| `update_belief` | "How reliable has this tool been?" — with an honest interval |
+| `detect_loop` | "Am I stuck repeating myself?" |
+| `monitor_drift` | "Has my routing distribution shifted?" |
+| `audit_trail` | "Show me every decision I made and why" |
+
+### Why an agent benefits from these specifically
+
+**Classification comes with its reasoning.** An agent that routes a query can
+show why, and a reviewer can check whether it was sensible:
+
+```json
+{
+  "domain": "Chaotic",
+  "confidence": 0.66,
+  "entropy": 0.71,
+  "abstained": false,
+  "why": ["now", "is", "corrupting", "right now"]
+}
 ```
-Human: What's the causal effect of increasing ad spend on revenue,
-       controlling for seasonality?
 
-Agent → MCP → classify_query("causal effect of ad spend on revenue")
-      → domain: Complicated, confidence: 0.87
+That query was *"the pipeline is corrupting rows right now"*. It contains none of
+`emergency`, `crisis`, `outage` or `urgent` — a keyword matcher abstains on it,
+and answering a live incident from cache is the exact failure this is for.
 
-Agent → MCP → build_causal_dag(
-        variables: ["ad_spend", "revenue", "seasonality"],
-        edges: [["ad_spend", "revenue"], ["seasonality", "ad_spend"],
-                ["seasonality", "revenue"]],
-        treatment: "ad_spend", outcome: "revenue")
-      → adjustment_set: {"seasonality"}
+**Abstention is a first-class answer.** When the classifier cannot read a query
+it returns `Disorder` at **exactly zero** confidence with high entropy. Escalate
+on that. It is a designed contract, not an accident of scoring:
 
-Agent → MCP → estimate_treatment_effect(treatment: [...], outcome: [...])
-      → ate: 2.34, std_error: 0.41
+```json
+{ "domain": "Disorder", "confidence": 0.0, "entropy": 1.0, "abstained": true }
 ```
+
+**Every call is audited.** `audit_trail` returns what the agent did, including
+the calls that failed — an audit trail holding only successes answers the wrong
+question:
+
+```json
+{
+  "total": 1,
+  "returned": 1,
+  "entries": [{
+    "action": "classify_domain",
+    "decision": "Approve",
+    "engine": "cynepic-mcp",
+    "id": "52ecf660-b145-4169-b382-bfbf3582a90a",
+    "timestamp": "2026-08-21T19:23:50.405980636Z",
+    "metadata": { "query": "the pipeline is corrupting rows right now" }
+  }]
+}
+```
+
+The trail lives for the process, which for a stdio server is one client session.
+For durable audit, record the entries yourself — they are `Serialize`.
+
+### A worked pattern: route, then act, then justify
+
+1. `classify_domain` on the user's request.
+2. If `abstained`, ask a human — do not guess.
+3. If `Chaotic`, act to stabilise first and analyse afterwards.
+4. `check_policy` before any action with consequences.
+5. `audit_trail` at the end to explain what happened.
 
 ---
 
-## Data Engineering Integration
+## HTTP — a service your platform calls
 
-### Apache Arrow / Parquet
-
-cynepic-causal currently uses ndarray for numeric operations. A future Polars backend is planned (v0.4+) to enable Arrow-native data flows:
-
-```
-Parquet file → Polars LazyFrame → cynepic-causal (Rust)   [planned]
-             → ATE estimation → JSON result
-             → or Arrow IPC → Python/Spark consumer
+```bash
+cargo run --release -p cynepic-server     # 127.0.0.1:4310, or set CYNEPIC_BIND
 ```
 
-### Integration Points
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | Liveness, and which version is deployed |
+| `/router/classify` | POST | Query → domain, confidence, entropy |
+| `/causal/estimate` | POST | Treatment effect with full provenance |
+| `/bayes/update` | POST | Conjugate belief update with an exact interval |
+| `/guardian/evaluate` | POST | Policy verdict |
 
-| Tool | Integration |
-|------|------------|
-| **dbt** | Validate causal DAG assumptions against dbt model lineage |
-| **Great Expectations** | Causal assertions as data quality checks |
-| **Dagster / Prefect** | cynepic-graph nodes as orchestrator tasks |
-| **Delta Lake / Iceberg** | Read treatment/outcome data from lakehouse tables via Polars |
-| **Kafka / Redpanda** | Stream observations → cynepic-bayes for real-time belief updates |
-| **OpenTelemetry** | Export audit trails as OTel spans via `tracing-opentelemetry` |
+### Estimating an effect
+
+```bash
+curl -s localhost:4310/causal/estimate -H 'content-type: application/json' -d '{
+  "treatment":  [1, 0, 1, 0, 1, 0, 1, 0],
+  "outcome":    [3.0, 1.0, 3.5, 1.2, 2.8, 0.9, 3.1, 1.1],
+  "covariates": [[0.2],[0.1],[0.4],[0.3],[0.5],[0.2],[0.3],[0.1]],
+  "method": "ols"
+}'
+```
+
+`method` is one of `ols`, `ipw`, `att`. The response carries the provenance, not
+just the number:
+
+```json
+{
+  "ate": 2.038709677419354,
+  "std_error": 0.1520066278642411,
+  "confidence_interval": [1.7407821611538667, 2.336637193684841],
+  "estimand": "ATE",
+  "population": "the whole population",
+  "std_error_kind": "Hc1",
+  "n_obs": 8,
+  "method": "ols",
+  "diagnostics": {
+    "rank": [3, 3],
+    "arm_sizes": [4, 4],
+    "effective_n": null,
+    "propensity_range": null,
+    "variance_dof": null,
+    "converged": null
+  }
+}
+```
+
+`rank` is `[found, expected]` — equal means the design was full rank. The
+`null`s are diagnostics that only a weighted estimator produces; switch
+`"method"` to `"ipw"` and `effective_n`, `propensity_range`, `variance_dof` and
+`converged` all fill in.
+
+### Errors are part of the API
+
+Data problems are **422**, not 500 — a 500 pages someone at 3am, a 422 tells the
+caller what to fix. Each carries a stable `error` kind you can branch on:
+
+```json
+{ "error": "insufficient_overlap",
+  "detail": "412 of 2000 units have propensity outside [0.02, 0.98]" }
+```
+
+Kinds include `length_mismatch`, `empty_arm`, `insufficient_data`,
+`rank_deficient`, `not_converged`, `separation`, `insufficient_overlap`,
+`weak_instrument`, `constant_treatment`, `ragged_covariates`, and
+`unknown_method` (a **400** — the request is malformed, not the data in it).
+
+### Where this fits in an MLOps platform
+
+- **Before promoting a model**: `/causal/estimate` on the shadow-traffic outcome,
+  adjusting for the covariates that differ between arms.
+- **On every inference request**: `/guardian/evaluate` as an admission check.
+- **Per model or per tool**: `/bayes/update` to track a reliability estimate that
+  reports how sure it is, so a new model with three observations does not look
+  identical to one with three thousand.
+- **On a schedule**: watch `variance_dof` and `effective_n` in estimate responses.
+  Falling numbers mean your populations are drifting apart.
 
 ---
 
-## MLOps Integration
+## Python — for analysis and notebooks
 
-### Experiment Tracking
+```bash
+pip install maturin
+maturin build --release --features extension-module --manifest-path bindings/pyo3/Cargo.toml
+pip install target/wheels/*.whl
+```
+
+### Estimating an effect
 
 ```python
-# MLflow integration pattern
-import mlflow
-from cynepic import estimate_ate, bayesian_update
+import cynepic
 
-with mlflow.start_run():
-    result = estimate_ate(treatment, outcome)
-    mlflow.log_metric("ate", result.ate)
-    mlflow.log_metric("ate_std_error", result.std_error)
+effect = cynepic.estimate_ate(treatment, outcome, covariates)
+print(effect)
+# CausalEffect(ATE=1.9933, 95% CI [1.8991, 2.0875], n=2000)
 
-    belief = bayesian_update("beta_binomial", alpha=1, beta=1, successes=50, failures=10)
-    mlflow.log_metric("posterior_mean", belief.mean)
-    mlflow.log_metric("posterior_variance", belief.variance)
+effect.ate                  # 1.9933
+effect.confidence_interval  # (1.8991, 2.0875)
+effect.estimand             # 'ATE'
+effect.population           # 'the whole population'
+effect.std_error_kind       # 'Hc1'
+effect.significant          # True — or None if no interval could be formed
 ```
 
-### Model Registry
+Three estimators, answering three different questions:
 
-cynepic models (DAGs, belief states, policies) are serializable JSON — store in any model registry:
+| Call | Answers | Use when |
+|---|---|---|
+| `estimate_ate(t, y, x)` | Effect over everyone, adjusting for `x` | The outcome is plausibly linear in the covariates |
+| `estimate_ate_weighted(t, y, x)` | Effect over everyone, by reweighting | *Assignment* is easier to model than the outcome |
+| `estimate_att(t, y, x)` | Effect **on the treated** | "Did the campaign work?" — usually this one |
+
+`estimate_ate` with no covariates is a plain difference in means.
+
+### The two fields to read before trusting a weighted interval
 
 ```python
-# Register a causal DAG as an MLflow model artifact
-dag_json = dag.to_json()
-mlflow.log_dict(dag_json, "causal_dag.json")
+w = cynepic.estimate_ate_weighted(t, y, x)
+w.effective_n      # 1695.4  — of 2000. Kish effective sample size
+w.variance_dof     # 329.9   — effective degrees of freedom
+w.propensity_range # (0.069, 0.923)
+```
+
+**`effective_n` far below `n_obs` means the estimate rests on a handful of rows**
+however large your dataframe is. `variance_dof` in the single digits on a large
+dataset means the same thing about the interval.
+
+And the counterintuitive part, which is measured rather than folklore: under
+heavy weighting, a **narrow** interval is the one to distrust. In the worst
+validation cell, *every single interval that missed the truth was one reporting
+below-average uncertainty*. The rare heavily-weighted rows are what remove the
+bias; a sample that happens to miss them looks confident and is wrong.
+
+### The rest of the Python surface
+
+```python
+dag = cynepic.CausalDag()
+dag.add_edge("season", "sales")
+dag.add_edge("season", "promo")
+dag.add_edge("promo", "sales")
+dag.find_backdoor_adjustment("promo", "sales")   # ['season']
+dag.d_separated("promo", "sales", ["season"])    # False — a direct edge remains
+
+belief = cynepic.BetaBinomial()
+belief.update(successes=47, failures=3)
+belief.mean            # a property, not a method
+
+breaker = cynepic.CircuitBreaker(failure_threshold=5, recovery_timeout_secs=30)
+breaker.record_failure()
+breaker.is_open        # also a property
+
+tools = cynepic.ToolBeliefSet()
+tools.add_tool("search")
+tools.record_failure("search")
+tools.reliability("search")
+tools.should_circuit_break("search", 0.8)
+```
+
+### What Python does *not* have yet
+
+Front-door identification, instrumental variables, refutation tests and the
+MCMC samplers are Rust-only for now. They are reachable over HTTP or by writing
+a small Rust shim. This is a real gap, not an oversight to be discovered later.
+
+### Interop with what you already use
+
+There is **no zero-copy numpy path yet** — inputs are Python lists, so a
+`DataFrame` needs `df["col"].tolist()`. For the array sizes this is aimed at
+(thousands to hundreds of thousands of rows) the conversion is not the
+bottleneck; the estimator still beats `statsmodels` on like-for-like work. If it
+becomes your bottleneck, that is worth reporting as an issue with the shape of
+your data.
+
+```python
+import polars as pl
+df = pl.read_parquet("experiment.parquet")
+effect = cynepic.estimate_ate(
+    df["treated"].cast(pl.Float64).to_list(),
+    df["revenue"].to_list(),
+    df.select(["tenure", "plan_tier"]).rows(),
+)
 ```
 
 ---
 
-## Deployment Patterns
+## Rust — embedded in your service
 
-| Pattern | Stack | Use Case |
-|---------|-------|----------|
-| **Sidecar** | cynepic-server Docker container | Kubernetes pod alongside Python ML service |
-| **Embedded library** | `cargo add cynepic-*` | Rust microservice with native causal/Bayesian capabilities |
-| **Python extension** | `pip install cynepic` | Drop-in acceleration for DoWhy/PyMC workflows |
-| **MCP tool** | cynepic-mcp binary | AI agent tooling (Claude, GPT, local models) |
-| **Serverless** | WASM on Cloudflare Workers | Edge causal inference / Bayesian updates |
-| **Spark UDF** | JNI + cynepic-causal | Distributed treatment effect estimation |
+```toml
+[dependencies]
+cynepic-causal   = "0.3"
+cynepic-guardian = "0.3"
+```
+
+```rust
+use cynepic_causal::estimate::linear::LinearATEEstimator;
+
+let result = LinearATEEstimator::ols_adjusted(&treatment, &outcome, &covariates)?;
+println!("{} = {:.4} ± {:.4}", result.estimand().label(), result.ate(), result.std_error());
+```
+
+`ATEResult` has no public constructor. You cannot build one by hand, which means
+a number in your system always arrived with its estimand, its standard-error
+kind and its diagnostics attached.
+
+The always-on guardrails are cheap enough to leave on: a circuit-breaker check is
+**16ns**, a rate-limit check **112ns**, a full Rego policy evaluation **5.6µs**.
+That matters because a guardrail applied to one call in ten is not a guardrail,
+and the usual reason people sample them is cost.
+
+---
+
+## Performance, honestly
+
+Measured on one machine against the tools you would otherwise use. Full table and
+method in [roadmap.md](roadmap.md#benchmarking--what-still-has-to-be-proven).
+
+| Task | Alternative | cynepic-rs | |
+|---|---|---|---|
+| OLS + robust SE, n=100k | statsmodels 16.05ms | **9.08ms** | 1.8x faster |
+| OLS + robust SE, n=10k **p=25** | statsmodels **10.51ms** | 14.40ms | **1.37x slower** |
+| IPW, like for like, n=1k | statsmodels 361µs | **160µs** | 2.3x faster |
+| Policy eval vs sidecar | OPA 320µs | **5.6µs** | 57x faster |
+| Policy eval vs engine | OPA 17.6µs | **5.6µs** | 3.1x faster |
+| Workflow step | LangGraph 58µs | **0.57µs** | 102x faster |
+
+Three things this table is careful about:
+
+- **We lose at 25 covariates.** LAPACK's blocked QR beats ours and the gap widens
+  with `p`. This crate suits *low-dimensional, high-volume* estimation — many
+  small estimates rather than one wide one.
+- **`ipw` as shipped is ~3.6x slower than statsmodels**, because it fits the
+  propensity model out-of-fold — six fits instead of one — which is what made its
+  intervals correct. The "like for like" row is the same estimator without that.
+  You can have the speed via `fit_propensity` + `ipw_with_model`, and you are
+  trading away the coverage fix to get it.
+- **The policy row is two rows** because 94.5% of the sidecar figure is deleting
+  an HTTP hop, not a better engine. Both are real; only one is about this code.
+
+---
+
+## What is not here
+
+Named so you do not go looking:
+
+- **No WASM in the browser.** Server-side `wasm32-wasip1` works for core, causal
+  and bayes. Browser targets build for nothing yet.
+- **No JVM bindings.** Use the HTTP API.
+- **No Arrow or Polars backend.** Lists in, results out.
+- **No streaming or incremental estimation.** Estimators take a complete dataset.
+- **The router is not accurate enough to run unsupervised** — 0.656 macro F1
+  cross-validated. Deploy it behind a human or an escalation rule. It abstains
+  reliably, which is what makes that safe; it does not classify reliably enough
+  to be left alone, and no cost-saving figure is claimed because none is measured.
+
+---
+
+## Where to look next
+
+- [FINDINGS.md](FINDINGS.md) — every correctness defect found, with its
+  measurement, including the two still open
+- [CRATE_GUIDE.md](CRATE_GUIDE.md) — per-crate API tour
+- [WORKFLOWS.md](WORKFLOWS.md) — longer end-to-end patterns
+- [roadmap.md](roadmap.md) — what is measured, what is assumed, and what it would
+  take to prove the rest

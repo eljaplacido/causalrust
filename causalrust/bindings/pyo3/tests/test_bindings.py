@@ -199,3 +199,91 @@ def test_the_repr_counts_the_tools_it_holds():
     tools.add_tool("b")
     assert len(tools) == 2
     assert "tools=2" in repr(tools)
+
+
+# ── Causal estimation ───────────────────────────────────────────────────
+
+
+def _confounded(n=1500, seed=11):
+    """Observational data with a known effect of 2.0 and real confounding."""
+    import math
+    import random
+
+    rng = random.Random(seed)
+    t, y, x = [], [], []
+    for _ in range(n):
+        x0 = rng.gauss(0, 1)
+        p = 1 / (1 + math.exp(-0.8 * x0))
+        ti = 1.0 if rng.random() < p else 0.0
+        t.append(ti)
+        x.append([x0, rng.gauss(0, 1)])
+        y.append(2.0 * ti + 0.75 * x0 + rng.gauss(0, 1))
+    return t, y, x
+
+
+def test_adjusted_estimate_recovers_a_known_effect():
+    t, y, x = _confounded()
+    r = cynepic.estimate_ate(t, y, x)
+    assert abs(r.ate - 2.0) < 0.2, r.ate
+    lo, hi = r.confidence_interval
+    assert lo < 2.0 < hi, (lo, hi)
+
+
+def test_an_estimate_arrives_with_its_provenance():
+    # `ATEResult` has no public constructor in Rust precisely so a number cannot
+    # travel without what it means. The binding must not undo that at the
+    # language boundary, which is where it matters most.
+    t, y, x = _confounded()
+    r = cynepic.estimate_ate(t, y, x)
+    assert r.estimand == "ATE"
+    assert r.population
+    assert r.std_error_kind
+    assert r.n_obs == len(t)
+    assert r.significant is True
+
+
+def test_weighted_and_treated_estimands_are_labelled_differently():
+    # ATE and ATT answer different questions. Reporting one as the other is a
+    # silent category error, so the label travels with the number.
+    t, y, x = _confounded()
+    assert cynepic.estimate_ate_weighted(t, y, x).estimand == "ATE"
+    assert cynepic.estimate_att(t, y, x).estimand == "ATT"
+
+
+def test_weighting_reports_the_diagnostics_you_must_read():
+    # Under heavy weighting a NARROW interval is the case to distrust, and these
+    # are the fields that reveal it. A binding that dropped them would leave a
+    # Python caller unable to tell a solid interval from a fragile one.
+    t, y, x = _confounded()
+    w = cynepic.estimate_ate_weighted(t, y, x)
+    assert w.effective_n is not None and 0 < w.effective_n <= w.n_obs
+    assert w.variance_dof is not None and w.variance_dof > 0
+    lo, hi = w.propensity_range
+    assert 0.0 < lo < hi < 1.0
+
+
+def test_an_estimate_without_covariates_is_a_plain_contrast():
+    t, y, _ = _confounded()
+    r = cynepic.estimate_ate(t, y)
+    assert r.n_obs == len(t)
+    assert r.estimand == "ATE"
+
+
+def test_unusable_data_raises_rather_than_returning_a_number():
+    # numpy's least squares, given a collinear design, returns -0.000562 with no
+    # warning — which reads as "no effect" rather than "undefined". Refusing is
+    # the whole point.
+    with pytest.raises(ValueError):
+        cynepic.estimate_ate([1.0, 1.0, 1.0], [1.0, 2.0, 3.0])
+    with pytest.raises(ValueError):
+        cynepic.estimate_ate([1.0, 0.0], [1.0, 2.0, 3.0])
+    with pytest.raises(ValueError):
+        cynepic.estimate_ate([1.0, 0.0, 1.0], [1.0, 2.0, 3.0], [[1.0], [2.0]])
+    with pytest.raises(ValueError):
+        cynepic.estimate_ate([1.0, 0.0], [1.0, 2.0], [[1.0], [2.0, 3.0]])
+
+
+def test_the_repr_shows_the_interval_not_just_the_point():
+    t, y, x = _confounded()
+    text = repr(cynepic.estimate_ate(t, y, x))
+    assert "ATE=" in text and "95% CI" in text and "n=" in text

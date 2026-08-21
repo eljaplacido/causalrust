@@ -470,6 +470,7 @@ dependencies = [
  "cynepic-graph",
  "cynepic-guardian",
  "cynepic-router",
+ "ndarray",
  "pyo3",
  "serde",
  "serde_json",

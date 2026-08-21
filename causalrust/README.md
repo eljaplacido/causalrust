@@ -113,11 +113,28 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 |-----------|------------------|------------|---------|--------|
 | DAG d-separation | NetworkX | petgraph | **9–19x** | **measured** |
 | Beta 95% credible interval | scipy (Boost) | `bisect_cdf` | **2.9x** | **measured** |
+| OLS + robust SE, n=100k | statsmodels | pivoted QR | **1.8x** | **measured** |
+| OLS + robust SE, n=10k **p=25** | statsmodels | pivoted QR | **0.7x** | **measured — we lose** |
+| IPW, like for like | statsmodels | IRLS | **1.1–2.3x** | **measured** |
 | StateGraph step | LangGraph | typed dispatch | **100–191x** | **measured** |
 | Policy evaluation vs sidecar | OPA over HTTP | in-process regorus | **57x** | **measured** |
 | Policy evaluation vs engine | OPA's Go evaluator | regorus | **3.1x** | **measured** |
 | Beta conjugate prior update | PyMC | direct | — | not a fair comparison |
 | Circuit breaker check | Python | atomics | — | not a fair comparison |
+
+**We are slower in one place, and it is in the table.** At 25 covariates
+statsmodels' LAPACK-backed QR beats ours by 1.37x, and the gap widens with the
+number of covariates. This crate's advantage is in low-dimensional,
+high-volume estimation — many small estimates rather than one wide one. Closing
+it means a BLAS dependency, which would cost the "no system libraries, builds
+for WASM" property the rest of the design is organised around.
+
+Note also that `ipw` **as shipped** is ~3.6x slower than statsmodels, because it
+fits the propensity model out-of-fold — six fits instead of one — which is what
+made its confidence intervals correct. The "like for like" row above is the same
+estimator without that correction, and there it is faster. You can have the
+speed via `fit_propensity` + `ipw_with_model`; you are trading away the coverage
+fix to get it.
 
 The policy row was one number doing two jobs, so it is now two rows. OPA's API
 reports its own `timer_rego_query_eval_ns`, which shows that **94.5% of the

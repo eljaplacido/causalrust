@@ -54,7 +54,7 @@ causalrust/                    # Git root
 ```bash
 cd causalrust/causalrust
 cargo build --workspace            # Build all crates
-cargo test --workspace --all-features   # 395 tests (404 with --no-default-features,
+cargo test --workspace --all-features   # 404 tests (413 with --no-default-features,
                                         # which adds the pyo3 binding suite)
 cargo test -p cynepic-core         # Test single crate
 cargo test -p cynepic-guardian --no-default-features  # Guardian without rego
@@ -154,13 +154,14 @@ No circular dependencies. Each crate re-exports `cynepic-core`.
 | core | Complete | 13 | Domain enum, engine trait, policy types, audit types, epistemic state |
 | guardian | **Measured** | 35 + 15 guardrails | Policy chains, Rego v1 (+ v0 opt-in), circuit breaker (**real half-open state**), loop detection, rate limiting, HITL escalation, bias auditing, audit trail |
 | causal | **Validated** | 94 + 34 regressions | DAG (acyclicity enforced), d-separation, backdoor/front-door (latent-aware), OLS+QR with HC1/HC3, IPW via IRLS, IV/2SLS (LATE-labelled), refutation in SE units, counterfactual |
-| router | **Measured** | 22 + 8 accuracy + 8 lexical | Keyword classifier (**macro F1 0.290, 0.000 recall on Chaotic**); `LexicalClassifier` tf-idf (**0.656 / 0.625 cross-validated**), entropy scoring, cost-aware routing, budget tracking, drift detection |
+| router | **Measured** | 26 + 8 accuracy + 8 lexical | Keyword classifier (**macro F1 0.290, 0.000 recall on Chaotic**); `LexicalClassifier` tf-idf (**0.656 / 0.625 cross-validated**), entropy scoring, cost-aware routing, budget tracking, drift detection |
 | bayes | **Calibrated** | 30 + 12 calibration | 4 conjugate priors with **exact** quantile intervals, 3 MCMC samplers (SBC-verified), belief tracker, tool reliability |
 | graph | **Measured, no findings** | 10 + 15 properties | StateGraph, conditional edges, cycle detection, timeout, checkpoint/resume, event hooks |
 | testkit | Internal | 44 | Ground-truth DGPs, coverage harness, metamorphic relations, Bayesian calibration + SBC, 96-query labelled routing corpus (`publish = false`) |
 
-**Total: 395 tests (404 under `--no-default-features`), 4 open findings specs
-across 5 measured crates, 0 warnings.**
+**Total: 404 tests (413 under `--no-default-features`) plus 22 Python tests
+against the built wheel, 4 open findings specs across 5 measured crates,
+0 warnings.**
 
 > "Solid" means the feature exists and its tests pass — not that the statistical
 > output is trustworthy. Those are different claims and only one of them is now

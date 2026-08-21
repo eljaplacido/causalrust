@@ -138,6 +138,243 @@ impl PyCausalDag {
     }
 }
 
+// ── Causal effect estimation ───────────────────────────────────────────
+
+/// The result of estimating a causal effect.
+///
+/// # Why this is a class and not a float
+///
+/// `cynepic-causal`'s `ATEResult` has no public constructor, deliberately: a
+/// number cannot be separated from what it means. A binding that returned a
+/// bare float would undo that guarantee at the language boundary, which is
+/// exactly where it matters most — the Python caller is the one furthest from
+/// the assumptions.
+///
+/// So every estimate arrives with the *estimand* it computed (the average
+/// effect over everyone, or only over the treated — different questions), the
+/// kind of standard error behind its interval, and the diagnostics from the fit.
+// `skip_from_py_object`: a `CausalEffect` travels out of Rust and is never
+// passed back in, so the conversion is incidental rather than wanted. Opting
+// out is also the safer default here — accepting one as an *input* would let a
+// caller hand-build a result and defeat the provenance guarantee entirely.
+#[pyclass(name = "CausalEffect", skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyCausalEffect {
+    /// The point estimate.
+    #[pyo3(get)]
+    ate: f64,
+    /// Its standard error.
+    #[pyo3(get)]
+    std_error: f64,
+    /// 95% confidence interval, as a `(low, high)` tuple.
+    #[pyo3(get)]
+    confidence_interval: Option<(f64, f64)>,
+    /// Which question this answers: "ATE", "ATT", "ATC" or "LATE".
+    #[pyo3(get)]
+    estimand: String,
+    /// Whose effect it is — the population the estimand refers to.
+    #[pyo3(get)]
+    population: String,
+    /// How the standard error was computed.
+    #[pyo3(get)]
+    std_error_kind: String,
+    /// Observations used.
+    #[pyo3(get)]
+    n_obs: usize,
+    /// Kish effective sample size, where weighting was involved.
+    ///
+    /// **The number to read before trusting a weighted interval.** Far below
+    /// `n_obs` means the estimate rests on a handful of observations however
+    /// large the dataset is.
+    #[pyo3(get)]
+    effective_n: Option<f64>,
+    /// Effective degrees of freedom of the variance estimate.
+    ///
+    /// In the single digits on a large dataset means the interval is resting on
+    /// very few observations — and under heavy weighting a *narrow* interval in
+    /// that regime is the case to distrust, not to trust.
+    #[pyo3(get)]
+    variance_dof: Option<f64>,
+    /// Smallest and largest fitted propensity score, where one was fitted.
+    #[pyo3(get)]
+    propensity_range: Option<(f64, f64)>,
+}
+
+#[pymethods]
+impl PyCausalEffect {
+    /// Whether the 95% interval excludes zero.
+    ///
+    /// Returns `None` rather than `False` when no interval exists, so "we could
+    /// not tell" stays distinguishable from "no effect".
+    #[getter]
+    fn significant(&self) -> Option<bool> {
+        self.confidence_interval
+            .map(|(lo, hi)| lo > 0.0 || hi < 0.0)
+    }
+
+    fn __repr__(&self) -> String {
+        match self.confidence_interval {
+            Some((lo, hi)) => format!(
+                "CausalEffect({}={:.4}, 95% CI [{:.4}, {:.4}], n={})",
+                self.estimand, self.ate, lo, hi, self.n_obs
+            ),
+            None => format!(
+                "CausalEffect({}={:.4}, se={:.4}, n={})",
+                self.estimand, self.ate, self.std_error, self.n_obs
+            ),
+        }
+    }
+}
+
+impl PyCausalEffect {
+    fn from_result(r: &cynepic_causal::ATEResult) -> Self {
+        let d = r.diagnostics();
+        Self {
+            ate: r.ate(),
+            std_error: r.std_error(),
+            confidence_interval: r.confidence_interval(0.95),
+            estimand: r.estimand().label().to_string(),
+            population: r.estimand().population().to_string(),
+            std_error_kind: format!("{:?}", r.std_error_kind()),
+            n_obs: r.n_obs(),
+            effective_n: d.effective_n,
+            variance_dof: d.variance_dof,
+            propensity_range: d.propensity_range,
+        }
+    }
+}
+
+/// Build ndarray inputs from Python lists, checking shape before the estimator
+/// does, so the error names the Python-side problem.
+fn arrays(
+    treatment: Vec<f64>,
+    outcome: Vec<f64>,
+    covariates: Option<Vec<Vec<f64>>>,
+) -> PyResult<(
+    ndarray::Array1<f64>,
+    ndarray::Array1<f64>,
+    ndarray::Array2<f64>,
+)> {
+    let n = treatment.len();
+    if outcome.len() != n {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "treatment has {n} entries but outcome has {}",
+            outcome.len()
+        )));
+    }
+    let rows = covariates.unwrap_or_default();
+    let x = if rows.is_empty() {
+        ndarray::Array2::zeros((n, 0))
+    } else {
+        if rows.len() != n {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{} covariate rows for {n} units",
+                rows.len()
+            )));
+        }
+        let p = rows[0].len();
+        if rows.iter().any(|r| r.len() != p) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "every covariate row must have the same length",
+            ));
+        }
+        ndarray::Array2::from_shape_fn((n, p), |(i, j)| rows[i][j])
+    };
+    Ok((
+        ndarray::Array1::from_vec(treatment),
+        ndarray::Array1::from_vec(outcome),
+        x,
+    ))
+}
+
+fn to_py_err(e: cynepic_causal::EstimationError) -> PyErr {
+    // ValueError, not RuntimeError: every one of these describes the caller's
+    // *data*, and a caller told "your treatment arm is empty" can act where one
+    // told "internal error" cannot.
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+
+/// Estimate an average treatment effect by adjusting for covariates.
+///
+/// Least squares with a heteroskedasticity-robust standard error. Use this when
+/// the relationship between the covariates and the outcome is plausibly linear —
+/// it achieves nominal interval coverage on every cell of the validation grid.
+///
+/// # Errors
+///
+/// `ValueError` when the data cannot support an estimate: mismatched lengths, an
+/// empty treatment arm, a rank-deficient design. It **refuses rather than
+/// returning a plausible-looking number** — numpy's least squares, given the
+/// same collinear design, returns `-0.000562` with no warning, which reads as
+/// "no effect" rather than "undefined".
+#[pyfunction]
+#[pyo3(signature = (treatment, outcome, covariates=None))]
+fn estimate_ate(
+    treatment: Vec<f64>,
+    outcome: Vec<f64>,
+    covariates: Option<Vec<Vec<f64>>>,
+) -> PyResult<PyCausalEffect> {
+    let (t, y, x) = arrays(treatment, outcome, covariates)?;
+    let r = if x.ncols() > 0 {
+        cynepic_causal::estimate::linear::LinearATEEstimator::ols_adjusted(&t, &y, &x)
+    } else {
+        cynepic_causal::estimate::linear::LinearATEEstimator::difference_in_means(&t, &y)
+    }
+    .map_err(to_py_err)?;
+    Ok(PyCausalEffect::from_result(&r))
+}
+
+/// Estimate an average treatment effect by inverse-probability weighting.
+///
+/// Fits a propensity model, then reweights so the treated and control groups
+/// resemble each other. Use this when the *treatment assignment* is easier to
+/// model than the outcome.
+///
+/// The propensity model is fitted out-of-fold where the data supports it, which
+/// costs about four times as much as fitting it in-sample and is what makes the
+/// confidence intervals correct.
+///
+/// **Read `effective_n` and `variance_dof` on the result before trusting the
+/// interval.** Under heavy weighting a narrow interval is the case to distrust.
+///
+/// # Errors
+///
+/// `ValueError` as above, plus insufficient overlap — if the treated and control
+/// groups barely resemble each other, no amount of reweighting fixes it and the
+/// estimator says so instead of returning a confident number.
+#[pyfunction]
+fn estimate_ate_weighted(
+    treatment: Vec<f64>,
+    outcome: Vec<f64>,
+    covariates: Vec<Vec<f64>>,
+) -> PyResult<PyCausalEffect> {
+    let (t, y, x) = arrays(treatment, outcome, Some(covariates))?;
+    let r = cynepic_causal::estimate::propensity::PropensityScoreEstimator::ipw(&t, &y, &x)
+        .map_err(to_py_err)?;
+    Ok(PyCausalEffect::from_result(&r))
+}
+
+/// Estimate the effect **on the treated** rather than on everyone.
+///
+/// A different question from [`estimate_ate_weighted`], and usually the one
+/// meant by "did the campaign work" — the effect among those who actually
+/// received it.
+///
+/// # Errors
+///
+/// As [`estimate_ate_weighted`].
+#[pyfunction]
+fn estimate_att(
+    treatment: Vec<f64>,
+    outcome: Vec<f64>,
+    covariates: Vec<Vec<f64>>,
+) -> PyResult<PyCausalEffect> {
+    let (t, y, x) = arrays(treatment, outcome, Some(covariates))?;
+    let r = cynepic_causal::estimate::propensity::PropensityScoreEstimator::att(&t, &y, &x)
+        .map_err(to_py_err)?;
+    Ok(PyCausalEffect::from_result(&r))
+}
+
 // ── Beta-Binomial Bayesian Prior ───────────────────────────────────────
 
 /// Beta-Binomial conjugate prior for binary outcome tracking.
@@ -343,6 +580,10 @@ fn cynepic(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBetaBinomial>()?;
     m.add_class::<PyCircuitBreaker>()?;
     m.add_class::<PyToolBeliefSet>()?;
+    m.add_class::<PyCausalEffect>()?;
+    m.add_function(wrap_pyfunction!(estimate_ate, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_ate_weighted, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_att, m)?)?;
 
     // From the manifest, not a literal. A hand-written version drifts silently
     // and then a caller checking `cynepic.__version__` trusts the wrong thing.
