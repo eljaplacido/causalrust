@@ -99,6 +99,33 @@ cynepic-core = { path = "crates/cynepic-core", version = "0.3.0" }
 published — `cargo publish` rejects it and `cargo deny` reports it as a
 wildcard.
 
+## Pre-flight, verified 2026-08-21
+
+Checked before the 0.3.0 release. Re-check the first two if time has passed.
+
+| Check | Result |
+|---|---|
+| All six names free on crates.io | ✅ `cynepic-core`, `-guardian`, `-router`, `-causal`, `-bayes`, `-graph` — and `cynepic` itself, if an umbrella crate is ever wanted |
+| `cargo publish --dry-run -p cynepic-core` | ✅ packages 14 files; README, LICENSE and NOTICE all included |
+| `cynepic-testkit` does not block anything | ✅ it is a **path-only dev-dependency with no `version`**, which `cargo publish` strips. Had it carried a version, every dependent would fail to publish because the testkit is `publish = false` |
+| Every publishable crate has description, keywords, categories, docs.rs metadata | ✅ |
+
+### The one error you will see and should ignore
+
+`cargo publish --dry-run` on anything except `cynepic-core` fails with:
+
+```
+no matching package named `cynepic-core` found
+location searched: crates.io index
+```
+
+That is the chicken-and-egg, not a manifest fault: the dependents resolve
+`cynepic-core = { version = "0.3.0" }` against crates.io, where it does not
+exist *yet*. It resolves itself the moment core is published, which is why the
+order below is not optional. Do not "fix" it by removing the version from the
+path dependency — a path-only dependency is a wildcard, which `cargo-deny`
+rejects and `cargo publish` cannot resolve at all.
+
 ## Publishing
 
 ```bash
