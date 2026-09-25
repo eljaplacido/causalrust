@@ -1,6 +1,6 @@
 # Correctness findings — cynepic-rs
 
-> **Status: thirteen findings closed, two open, across three measured crates.**
+> **Status: thirteen findings closed, three open, across three measured crates.**
 >
 > - `cynepic-causal` — `ols_adjusted` and `ipw` are both nominal on every
 >   estimable grid cell. IPW's interval closed in the third round of
@@ -16,6 +16,11 @@
 >
 > - `cynepic-guardian` — circuit breaker, rate limiter and loop detector are
 >   property-tested over operation sequences ([G1](#g1), closed).
+>
+> - `cynepic-causal`, again — the counterfactual **point** estimate is sound and
+>   beats an assume-nothing-changed baseline, but its 95% **interval** covers the
+>   individual outcome 5.6% of the time ([C15](#c15), open). It propagates the
+>   uncertainty of the mean effect and omits the spread of individual effects.
 >
 > - `cynepic-graph` — **no findings.** Fifteen execution properties hold:
 >   determinism across runs and across rebuilds, `max_steps` as a hard bound
@@ -71,6 +76,7 @@ and it is why a fixed finding cannot quietly stay on the books.
 | [C12](#c12) | `dsep` | Unknown variables reported as d-separated | Critical | **Closed** |
 | [C13](#c13) | `estimate::propensity` | Propensity model never converged | Critical | **Closed** |
 | [C14](#c14) | `estimate::propensity` | Under heavy weights a *small* SE marks the intervals that miss | High | **ATE closed, ATT open** |
+| [C15](#c15) | `counterfactual` | A counterfactual interval is an ATE interval, so it omits individual effect spread | High | **OPEN** |
 | [B1](#b1) | `bayes::priors` | Beta interval was a normal approximation | High | **Closed** |
 | [R1](#r1) | `router::classifier` | Keyword classifier has no reach on natural phrasing | **Critical** | **OPEN** (answered, below bar) |
 | [G1](#g1) | `guardian::circuit_breaker` | No half-open state; whole load restored on a timer | **Critical** | **Closed** |
@@ -411,6 +417,66 @@ Specs: `b1_shipped_interval_matches_the_exact_reference`,
 `b1_beta_binomial_intervals_are_calibrated_at_small_n`.
 
 ---
+
+## <a id="c15"></a>C15 — a counterfactual interval is an ATE interval · **OPEN**
+
+`CounterfactualEngine::query_with_ate` answers a Level-3 question — *given that
+we observed Y under T=t, what would Y have been at t'?* — and reports a 95%
+confidence interval with it. The interval is wrong, and wrong in the dangerous
+direction.
+
+```rust
+// counterfactual.rs
+let cf_outcome = query.observed_outcome + ate_result.ate() * treatment_shift;
+// Uncertainty scales with the size of the intervention: SE = |shift| x SE(ATE).
+let cf_se = treatment_shift.abs() * ate_result.std_error();
+```
+
+`SE(ATE)` is the standard error of the **population mean effect**. An individual
+counterfactual carries that *plus* the spread of individual effects around the
+mean, and the second term is absent. So the interval is as narrow as the mean's
+— which shrinks with `n`, while individual uncertainty does not — and it is
+labelled 95%.
+
+**Measured, on two fixtures:**
+
+| fixture | effect spread | SE(ATE) | interval coverage | nominal |
+|---|---|---|---|---|
+| C15 spec, n=2000 | 1.5 | 0.053 | **5.6%** | 95% |
+| C2 decision corpus, n=500 | ~0.2 | 0.029 | **19.4%** | 95% |
+
+Coverage falls as heterogeneity rises relative to `SE(ATE)`, which is the
+signature of the omitted term rather than of a tuning constant.
+
+**The point estimate is not in question.** On C2 it beats the
+assume-nothing-changed baseline — RMSE 0.1896 against 0.2091 — so the projection
+`Y_obs + ATE x shift` is doing real work. Under a constant-effect DGP it is
+exact, as the module docstring says. It is only the interval that claims more
+than it knows.
+
+**Same class as [C1](#c1).** A singular design reported with zero uncertainty
+and a counterfactual reported with the mean's uncertainty are the same mistake:
+a confident interval around a quantity whose uncertainty was never accounted
+for. C1 was Critical because the number was arbitrary; this is High because the
+number is right and only the interval around it is not.
+
+**Why the spec's fixture is heterogeneous.** Under a constant-effect DGP the
+omitted term is zero, the interval is approximately correct, and the spec would
+pass while the defect remained. A homogeneous fixture would witness nothing, so
+individual effects are drawn with a spread several times `SE(ATE)` and the
+docstring says why.
+
+**What a fix would have to do.** Propagate a second variance component — the
+conditional variance of the individual effect — or stop reporting an interval on
+an individual counterfactual and report one on the *expected* counterfactual
+instead, which is what the current arithmetic actually computes. The second is
+smaller and may be the honest one: the crate cannot estimate individual effect
+spread from an ATE alone, and an interval it cannot compute should not be
+returned rather than returned too narrow.
+
+Found while running the crate against the C2 decision corpus for experiment #8
+of the benchmark programme, where both potential outcomes are known by
+construction and per-unit coverage is therefore directly checkable.
 
 ## <a id="c14"></a>C14 — IPW interval closed; ATT still open · **ATE CLOSED, ATT OPEN**
 

@@ -966,3 +966,110 @@ fn few_variance_degrees_of_freedom_widen_the_interval() {
         "the interval is no wider than a normal one despite {dof_heavy:.1} dof"
     );
 }
+
+// C15 — a counterfactual interval is an ATE interval (OPEN)
+
+/// The 95% interval on an INDIVIDUAL counterfactual covers the truth about a
+/// fifth of the time.
+///
+/// `query_with_ate` projects `Y_cf = Y_obs + ATE * shift` and sets
+/// `SE = |shift| * SE(ATE)`. That is the uncertainty in the *population mean*
+/// effect. An individual counterfactual also carries the spread of individual
+/// effects, which the interval omits entirely — so it is as narrow as the
+/// mean's, and it is labelled 95%.
+///
+/// The POINT estimate is not the problem and is not in question here: on the
+/// C2 decision corpus it beats the assume-nothing-changed baseline
+/// (RMSE 0.1896 against 0.2091). It is the interval that is wrong, which is the
+/// same class as [C1](../../docs/FINDINGS.md#c1) — a confident interval around
+/// a quantity whose uncertainty was never accounted for.
+///
+/// Heterogeneity is the whole mechanism, so the fixture states it: individual
+/// effects are drawn around the mean with a spread several times the standard
+/// error of that mean. Under a constant-effect DGP the interval would be
+/// approximately right and this spec would pass while the defect remained, so a
+/// homogeneous fixture would witness nothing.
+#[test]
+#[ignore = "C15: counterfactual interval propagates only ATE uncertainty; coverage ~0.19 vs nominal 0.95"]
+fn c15_counterfactual_interval_covers_the_individual_outcome() {
+    use cynepic_causal::{CounterfactualEngine, CounterfactualQuery};
+    use rand::{RngCore, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
+
+    // Deterministic normals without pulling in a distribution crate: the point
+    // is reproducibility, and Box-Muller over ChaCha8 is enough for a fixture.
+    fn uniform(rng: &mut ChaCha8Rng) -> f64 {
+        ((rng.next_u64() >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+    fn normal(rng: &mut ChaCha8Rng) -> f64 {
+        let u1 = uniform(rng).max(1e-12);
+        let u2 = uniform(rng);
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+
+    let n = 2_000usize;
+    let p = 3usize;
+    let mut rng = ChaCha8Rng::seed_from_u64(20260925);
+
+    let mut treatment = Array1::<f64>::zeros(n);
+    let mut outcome = Array1::<f64>::zeros(n);
+    let mut covariates = Array2::<f64>::zeros((n, p));
+    let mut y0 = vec![0.0; n];
+    let mut y1 = vec![0.0; n];
+
+    for i in 0..n {
+        let x: Vec<f64> = (0..p).map(|_| normal(&mut rng)).collect();
+        for (j, v) in x.iter().enumerate() {
+            covariates[[i, j]] = *v;
+        }
+        // Confounded assignment: x0 drives both treatment and outcome.
+        let logit = 0.8 * x[0] - 0.3 * x[1];
+        let t = if uniform(&mut rng) < 1.0 / (1.0 + (-logit).exp()) {
+            1.0
+        } else {
+            0.0
+        };
+        // Heterogeneous individual effect around a mean of 2.0.
+        let tau = 2.0 + 1.5 * normal(&mut rng);
+        let base = 1.0 + 0.9 * x[0] + 0.4 * x[1] + 0.3 * normal(&mut rng);
+        y0[i] = base;
+        y1[i] = base + tau;
+        treatment[i] = t;
+        outcome[i] = if t > 0.5 { y1[i] } else { y0[i] };
+    }
+
+    let ate = LinearATEEstimator::ols_adjusted(&treatment, &outcome, &covariates)
+        .expect("the fixture is estimable");
+
+    let mut covered = 0usize;
+    for i in 0..n {
+        let (factual, counter, truth) = if treatment[i] > 0.5 {
+            (1.0, 0.0, y0[i])
+        } else {
+            (0.0, 1.0, y1[i])
+        };
+        let q = CounterfactualQuery {
+            treatment: "T".into(),
+            outcome: "Y".into(),
+            factual_treatment: factual,
+            counterfactual_treatment: counter,
+            observed_outcome: outcome[i],
+        };
+        let r = CounterfactualEngine::query_with_ate(&q, &ate);
+        let (lo, hi) = r.confidence_interval;
+        if truth >= lo && truth <= hi {
+            covered += 1;
+        }
+    }
+
+    let coverage = covered as f64 / n as f64;
+    assert!(
+        coverage >= 0.90,
+        "counterfactual interval covers the individual outcome {:.1}% of the time \
+         against a nominal 95% (n={}, ATE se={:.4}); the interval propagates only \
+         the uncertainty of the mean effect and omits the spread of individual effects",
+        100.0 * coverage,
+        n,
+        ate.std_error(),
+    );
+}
