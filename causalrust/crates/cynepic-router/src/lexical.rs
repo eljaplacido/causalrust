@@ -254,7 +254,7 @@ pub struct LexicalClassifier {
 /// Bigrams are not a refinement here, they are most of the point: `what if`,
 /// `right now` and `why did` are the terms that carry Cynefin signal, and each
 /// is invisible to a unigram model that sees only `what`, `now` and `did`.
-fn tokenize_with(text: &str, stem: bool) -> Vec<String> {
+pub(crate) fn tokenize_with(text: &str, stem: bool) -> Vec<String> {
     let words: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())

@@ -20,6 +20,7 @@ pub mod config;
 // nothing: the type was unreachable, its four tests never ran, and the feature
 // was advertised in the crate docs and the MCP manifest regardless. Declaring a
 // module is not optional in Rust, and nothing warns when you forget.
+pub mod discriminative;
 pub mod drift;
 pub mod eval;
 pub mod lexical;
@@ -28,6 +29,7 @@ pub mod router;
 pub use budget::{BudgetDecision, BudgetTracker, CostMap};
 pub use classifier::{ClassificationResult, ClassifierError, KeywordClassifier, QueryClassifier};
 pub use config::{CostTier, RouteTarget, RouterConfig};
+pub use discriminative::DiscriminativeClassifier;
 pub use drift::{DriftDetector, DriftReport};
 pub use eval::ClassifierMetrics;
 pub use lexical::LexicalClassifier;

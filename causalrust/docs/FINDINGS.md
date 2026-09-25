@@ -10,9 +10,11 @@
 > - `cynepic-bayes` — every conjugate interval is calibrated and both samplers
 >   pass simulation-based calibration ([B1](#b1), closed).
 > - `cynepic-router` — the keyword classifier scores **macro F1 0.290** with
->   **0.000 recall on Chaotic** ([R1](#r1), open). A new `LexicalClassifier`
->   takes those to **0.656** and **0.625** under cross-validation, which is most
->   of the distance to the bar but not all of it, so the finding stays open.
+>   **0.000 recall on Chaotic** ([R1](#r1), open). `LexicalClassifier` takes
+>   those to 0.656 and 0.625 under cross-validation; `DiscriminativeClassifier`,
+>   on byte-identical features, to **0.720** and **0.708**. Macro F1 now clears
+>   the bar and **Chaotic recall does not**, so the finding stays open on that
+>   one number — and it is a separation problem, not a threshold one.
 >
 > - `cynepic-guardian` — circuit breaker, rate limiter and loop detector are
 >   property-tested over operation sequences ([G1](#g1), closed).
@@ -248,6 +250,75 @@ The spread across all eight configurations is 0.579 to 0.661. **That is the
 plateau**: bag-of-words over ~72 short training examples lands in the mid-0.6s
 whatever the weighting, matching or stemming. The remaining 0.04 of F1 and 0.18
 of recall are not another feature away.
+
+### The plateau was in the matching family, not in the features · `DiscriminativeClassifier`
+
+The sweep above varies weighting, matching and stemming — and lands between
+0.579 and 0.661. Read as "bag-of-words plateaus in the mid-0.6s" that is a
+stronger claim than what was varied supports: all eight draws share one decision
+rule, nearest centroid by cosine.
+
+`cynepic-router::discriminative` holds the feature pipeline **byte-identical** —
+same tokenizer, same smoothed idf, same concentration scaling, same L2
+normalisation, same evidence threshold — and replaces only the rule that turns a
+vector into a verdict, with multinomial logistic regression. Scored on the same
+four folds:
+
+| | keyword | centroid | logistic | R1's bar |
+|---|---|---|---|---|
+| macro F1 | 0.290 | 0.656 | **0.720** | 0.70 |
+| Chaotic recall | 0.000 | 0.625 | **0.708** | 0.80 |
+| accuracy | 0.198 | 0.604 | **0.708** | — |
+
+Per domain, cross-validated:
+
+| domain | centroid F1 | logistic F1 |
+|---|---|---|
+| Clear | 0.698 | 0.667 |
+| Complicated | **0.368** | **0.591** |
+| Complex | 0.875 | 0.898 |
+| Chaotic | 0.682 | 0.723 |
+
+**Macro F1 clears the bar. Chaotic recall does not, so R1 stays open** and the
+ratchet is unchanged at 4. The gain is concentrated exactly where the centroid
+model was weakest, and by the mechanism the error analysis above predicted: a
+centroid has no negative weights, so it cannot express "*why* argues against
+Chaotic". Fitted weights can, and Complicated — the class whose separation
+depends on precisely that — moves 0.368 to 0.591.
+
+**Hyperparameters are not chosen on the evaluation set.** `l2` is selected by a
+3-fold split *inside* each outer training fold, so no test item influences the
+model that scores it. The centroid figure above is the best of eight draws and
+is stated there as mildly optimistic; that caveat does not carry here.
+
+### What is left of R1, precisely
+
+Chaotic recall, and nothing else. The seven missed Chaotic items break down as:
+
+```
+misrouted to another domain:  6/7
+abstained (-> Disorder):      1/7
+```
+
+**A separation problem, not a threshold one.** Lowering the evidence gate can
+recover at most one item — 0.042 of recall — and buys it by answering
+contentless queries, which `ambiguous_input_is_still_declined` exists to
+prevent. The missed items are Chaotic by *stakes* rather than by vocabulary, and
+they carry other domains' strongest cues inside them:
+
+```
+the site is down and we do not know why                      -> Complex
+the database is unreachable and customers cannot log in      -> Complicated
+halt the run, the tool is charging real money on every retry  -> Clear
+```
+
+`why` is the heaviest Complicated weight in the fitted model, and here it sits
+inside a live incident. No reweighting of a bag of n-grams separates these,
+because the evidence that they are Chaotic is not lexical — it is tense, stakes
+and the implied demand to act first. That is the honest boundary of the cheap
+approach, and the first number in this ledger that says what an embedding model
+would actually have to buy: 0.09 of Chaotic recall, on items where the lexical
+signal points the other way.
 
 **Why not an embedding model.** Still wanted, still on the roadmap. This
 establishes what the cheap approach is worth first, so a later claim about
