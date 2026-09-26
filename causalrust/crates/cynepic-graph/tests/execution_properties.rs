@@ -457,3 +457,199 @@ async fn a_graph_without_an_entry_node_refuses() {
         Err(GraphError::NoEntryNode)
     ));
 }
+
+// ===========================================================================
+// OR2 / OR3 — the same properties, at scale and under concurrency
+// ===========================================================================
+//
+// The fifteen properties above hold on graphs of six nodes carrying an `i64`.
+// "No findings" on a fixture that small is a weaker statement than it looks:
+// a checkpoint that truncates, a step counter that overflows a small type, or
+// a serialiser that degrades on a large payload would all pass at n = 6.
+//
+// OR2 asks whether checkpoint/resume still reproduces an uninterrupted run at
+// length and at size. OR3 asks whether determinism survives concurrent node
+// execution.
+
+/// A pipeline long enough that an off-by-one or a truncation has room to show.
+fn long_linear_graph(n: usize) -> StateGraph<i64> {
+    linear_graph(n)
+}
+
+/// OR2, length: resume must reproduce the straight-through answer on a long graph.
+///
+/// The existing property cuts a six-node graph at five points. This cuts a
+/// 400-node graph at eighty, which is the version that would catch a resume
+/// path that works near the ends and drifts in the middle.
+#[tokio::test]
+async fn or2_resume_reproduces_an_uninterrupted_run_at_length() {
+    const N: usize = 400;
+    let graph = long_linear_graph(N);
+    let straight_through = graph.execute(0, N + 10).await.expect("valid graph");
+
+    #[allow(clippy::cast_possible_wrap)]
+    let expected: i64 = (0..N as i64).sum();
+    assert_eq!(
+        straight_through, expected,
+        "the long pipeline did not compute its own sum; the fixture is wrong, not the graph"
+    );
+
+    for cut in (5..N).step_by(5) {
+        #[allow(clippy::cast_possible_wrap)]
+        let state_at_cut: i64 = (0..cut as i64).sum();
+        let checkpoint = Checkpoint::new(state_at_cut, NodeId::new(format!("n{cut}")), cut);
+        let resumed = graph
+            .resume(checkpoint, N + 10)
+            .await
+            .expect("resumable checkpoint");
+        assert_eq!(
+            resumed, straight_through,
+            "resuming a {N}-node graph at step {cut} gave {resumed}, straight through gave \
+             {straight_through}; checkpoint fidelity holds at six nodes and not at {N}"
+        );
+    }
+}
+
+/// OR2, size: a checkpoint carrying a large state must round-trip exactly.
+///
+/// Checkpoints exist to cross a process boundary, and the boundary is where
+/// size starts to matter — a truncating writer, a lossy float path, or a
+/// serialiser with an implicit cap would all be invisible on an `i64`.
+#[tokio::test]
+async fn or2_checkpoint_round_trips_a_large_state() {
+    const WIDTH: usize = 50_000;
+
+    // A wide state that a lossy path would visibly damage.
+    let mut graph: StateGraph<Vec<i64>> = StateGraph::new();
+    for i in 0..4 {
+        #[allow(clippy::cast_possible_wrap)]
+        let delta = i as i64;
+        graph = graph.add_node(Arc::new(FnNode::new(
+            format!("n{i}"),
+            move |mut v: Vec<i64>| async move {
+                for x in &mut v {
+                    *x += delta;
+                }
+                Ok(v)
+            },
+        )));
+    }
+    for i in 0..3 {
+        graph = graph.add_edge(
+            NodeId::new(format!("n{i}")),
+            NodeId::new(format!("n{}", i + 1)),
+        );
+    }
+    let graph = graph.set_entry(NodeId::new("n0"));
+
+    #[allow(clippy::cast_possible_wrap)]
+    let initial: Vec<i64> = (0..WIDTH as i64).collect();
+    let straight_through = graph
+        .execute(initial.clone(), 10)
+        .await
+        .expect("valid graph");
+    assert_eq!(
+        straight_through.len(),
+        WIDTH,
+        "the run changed the state's length"
+    );
+
+    // Cut after the first node. n0 adds its index, which is zero, so the state
+    // at the cut is the initial state -- written as a clone rather than as an
+    // arithmetic no-op so the reason is visible.
+    let after_first: Vec<i64> = initial.clone();
+    let checkpoint = Checkpoint::new(after_first, NodeId::new("n1"), 1);
+    let json = checkpoint.to_json().expect("serialises");
+    let restored: Checkpoint<Vec<i64>> = Checkpoint::from_json(&json).expect("deserialises");
+
+    assert_eq!(
+        restored.state.len(),
+        WIDTH,
+        "a {WIDTH}-element state came back {} long; the checkpoint truncates at size",
+        restored.state.len()
+    );
+    let resumed = graph.resume(restored, 10).await.expect("resumable");
+    assert_eq!(
+        resumed, straight_through,
+        "a large state resumed to a different answer than running straight through"
+    );
+}
+
+/// OR3: there is no concurrent node execution, so its determinism is serial.
+///
+/// OR3 asks whether determinism holds under concurrent node execution, with the
+/// falsifier "non-determinism under concurrency -> the determinism claim needs
+/// a serial-only caveat".
+///
+/// **That falsifier cannot fire, because the executor has no concurrency.**
+/// `graph.rs` contains no `tokio::spawn`, no `JoinSet` and no `join_all`; the
+/// run loop visits one node, awaits it, and follows an edge. The determinism
+/// claim is therefore serial-only by construction rather than by caveat, and
+/// OR3 is not a question this component can currently answer.
+///
+/// This test pins that state of affairs by observing it rather than asserting
+/// it about the source: nodes record entry and exit, and no two node bodies
+/// may overlap. If parallel branches are ever added, this fails, and OR3 stops
+/// being inapplicable and becomes live — which is the point of writing it now
+/// instead of a comment.
+#[tokio::test]
+async fn or3_execution_is_serial_so_the_determinism_claim_is_serial_only() {
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Overlap {
+        in_flight: usize,
+        max_in_flight: usize,
+        order: Vec<String>,
+    }
+
+    let seen: Arc<Mutex<Overlap>> = Arc::new(Mutex::new(Overlap::default()));
+
+    let mut graph: StateGraph<i64> = StateGraph::new();
+    for i in 0..12 {
+        let seen = Arc::clone(&seen);
+        let name = format!("n{i}");
+        let label = name.clone();
+        graph = graph.add_node(Arc::new(FnNode::new(name, move |x: i64| {
+            let seen = Arc::clone(&seen);
+            let label = label.clone();
+            async move {
+                {
+                    let mut g = seen.lock().expect("lock");
+                    g.in_flight += 1;
+                    g.max_in_flight = g.max_in_flight.max(g.in_flight);
+                    g.order.push(label.clone());
+                }
+                // Yield so that, if the executor ever ran branches together,
+                // a second body would have the opportunity to enter here.
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                {
+                    let mut g = seen.lock().expect("lock");
+                    g.in_flight -= 1;
+                }
+                Ok(x + 1)
+            }
+        })));
+    }
+    for i in 0..11 {
+        graph = graph.add_edge(
+            NodeId::new(format!("n{i}")),
+            NodeId::new(format!("n{}", i + 1)),
+        );
+    }
+    let graph = graph.set_entry(NodeId::new("n0"));
+
+    let out = graph.execute(0, 50).await.expect("valid graph");
+    assert_eq!(out, 12, "every node should have run exactly once");
+
+    let g = seen.lock().expect("lock");
+    assert_eq!(
+        g.max_in_flight, 1,
+        "two node bodies overlapped: the executor has gained concurrency, so OR3 is \
+         now a live question and determinism under parallel branches must be measured \
+         rather than assumed"
+    );
+    let expected: Vec<String> = (0..12).map(|i| format!("n{i}")).collect();
+    assert_eq!(g.order, expected, "nodes did not run in edge order");
+}
